@@ -1,0 +1,76 @@
+# GitLab CI/CD Pipeline for pod-comfyui-rtx5000
+# Builds and pushes Docker image to Docker Hub
+
+stages:
+  - build
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_NAME: vlop12ui/pod-comfyui-vscode
+
+# Build and push Docker image
+docker-build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+
+  before_script:
+    # Login to Docker Hub
+    - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+    # Free up disk space
+    - df -h
+    - docker system prune -af --volumes || true
+    - df -h
+
+  script:
+    # Determine tags based on branch
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        TAGS="
+          -t ${IMAGE_NAME}:latest
+          -t ${IMAGE_NAME}:main
+          -t ${IMAGE_NAME}:main-${CI_COMMIT_SHORT_SHA}
+          -t ${IMAGE_NAME}:$(date +%Y%m%d)-${CI_COMMIT_SHORT_SHA}
+        "
+      elif [ "$CI_COMMIT_BRANCH" = "develop" ]; then
+        TAGS="
+          -t ${IMAGE_NAME}:develop
+          -t ${IMAGE_NAME}:develop-${CI_COMMIT_SHORT_SHA}
+          -t ${IMAGE_NAME}:$(date +%Y%m%d)-${CI_COMMIT_SHORT_SHA}
+        "
+      else
+        TAGS="-t ${IMAGE_NAME}:${CI_COMMIT_BRANCH}-${CI_COMMIT_SHORT_SHA}"
+      fi
+
+    # Build Docker image
+    - echo "Building Docker image with tags: $TAGS"
+    - docker build $TAGS .
+
+    # Push all tags
+    - docker push --all-tags ${IMAGE_NAME}
+
+    # Display summary
+    - echo "✅ Docker image built and pushed successfully"
+    - echo "📦 Image: ${IMAGE_NAME}"
+    - echo "🏷️  Tags pushed:"
+    - docker images ${IMAGE_NAME} --format "{{.Repository}}:{{.Tag}}" | head -10
+
+  after_script:
+    - docker logout
+
+  only:
+    - main
+    - develop
+
+  tags:
+    - docker
+
+  # Retry on failure (network issues, etc.)
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
