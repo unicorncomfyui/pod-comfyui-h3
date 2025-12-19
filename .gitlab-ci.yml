@@ -53,9 +53,6 @@ docker-build:
     - main
     - develop
 
-  tags:
-    - docker
-
   # Retry on failure (network issues, etc.)
   retry:
     max: 2
