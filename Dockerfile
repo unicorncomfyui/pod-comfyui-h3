@@ -1,12 +1,12 @@
-# RunPod ComfyUI Pod with VSCode
+# RunPod ComfyUI Pod with VSCode - RTX 5090 (OPTIMIZED)
 # Optimized for RTX 5090 with CUDA 12.8.1, SageAttention, and code-server
-# Base: Ubuntu 24.04 + CUDA 12.8.1-cudnn
+# Base: Ubuntu 22.04 + CUDA 12.8.1-cudnn
 
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Metadata
-LABEL maintainer="ComfyUI Pod VSCode"
-LABEL description="RunPod Pod with ComfyUI, VSCode (code-server), SageAttention, and performance optimizations"
+LABEL maintainer="ComfyUI Pod VSCode RTX5090"
+LABEL description="RunPod Pod with ComfyUI, VSCode (code-server), SageAttention - Optimized for RTX 5090"
 
 # Environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -15,184 +15,112 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     PATH="${CUDA_HOME}/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}" \
-    TORCH_CUDA_ARCH_LIST="8.9+PTX" \
+    TORCH_CUDA_ARCH_LIST="8.9" \
     COMFYUI_PORT=3000 \
     VSCODE_PORT=8080 \
     CHECK_MODELS=true
 
-# Install system dependencies
+# Install system dependencies, Python 3.11, and code-server in ONE layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Build essentials
-    build-essential \
-    cmake \
-    ninja-build \
-    pkg-config \
+    # Build essentials (will be removed later)
+    build-essential cmake ninja-build pkg-config \
     # Python 3.11
     software-properties-common \
     # Git and tools
-    git \
-    git-lfs \
-    wget \
-    curl \
-    unzip \
-    nano \
-    vim \
+    git git-lfs wget curl unzip nano vim \
     # Media libraries
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
     # Network tools
-    openssh-server \
-    rsync \
+    openssh-server rsync \
     # Performance optimization
-    google-perftools \
-    libtcmalloc-minimal4 \
-    && rm -rf /var/lib/apt/lists/*
+    google-perftools libtcmalloc-minimal4 \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-dev python3.11-venv python3-pip \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && curl -fsSL https://code-server.dev/install.sh | sh -s -- --version=4.96.2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Install Python 3.11 from deadsnakes PPA
-RUN add-apt-repository ppa:deadsnakes/ppa -y && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-dev \
-        python3.11-venv \
-        python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
-
-# Upgrade pip
-RUN python3 -m pip install --upgrade --ignore-installed pip setuptools wheel
-
-# Install PyTorch nightly with CUDA 12.8 support (RTX 5090 sm_120)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --pre torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/nightly/cu128 \
-    && rm -rf /tmp/* /var/tmp/*
-
-# Install code-server (VSCode web)
-ARG CODE_SERVER_VERSION=4.96.2
-RUN curl -fsSL https://code-server.dev/install.sh | sh -s -- --version=${CODE_SERVER_VERSION}
-
-# Create working directory
+# Install PyTorch nightly + ComfyUI + ALL custom nodes in ONE optimized layer
 WORKDIR /app
-
-# Clone ComfyUI (pinned version for stability)
 ARG COMFYUI_COMMIT=36357bb
-RUN git clone https://github.com/comfyanonymous/ComfyUI.git comfyui && \
-    cd comfyui && \
-    git reset --hard ${COMFYUI_COMMIT}
-
-# Install ComfyUI dependencies
-RUN --mount=type=cache,target=/root/.cache/pip \
-    cd comfyui && pip install -r requirements.txt \
-    && rm -rf /tmp/* /var/tmp/*
-
-# Install ComfyUI custom nodes - Batch 1 (lightweight)
-RUN cd comfyui/custom_nodes && \
-    git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git && \
-    git clone --depth 1 https://github.com/theUpsider/ComfyUI-Logic.git && \
-    git clone --depth 1 https://github.com/chrisgoringe/cg-use-everywhere.git && \
-    git clone --depth 1 https://github.com/chrisgoringe/cg-image-picker.git && \
-    git clone --depth 1 https://github.com/M1kep/ComfyLiterals.git && \
-    git clone --depth 1 https://github.com/Jordach/comfy-plasma.git && \
-    git clone --depth 1 https://github.com/ClownsharkBatwing/RES4LYF.git && \
-    git clone --depth 1 https://github.com/JPS-GER/ComfyUI_JPS-Nodes.git && \
-    rm -rf /tmp/* /var/tmp/*
-
-# Install ComfyUI custom nodes - Batch 2 (medium)
-RUN cd comfyui/custom_nodes && \
-    git clone --depth 1 https://github.com/rgthree/rgthree-comfy.git && \
-    git clone --depth 1 https://github.com/kijai/ComfyUI-KJNodes.git && \
-    git clone --depth 1 https://github.com/cubiq/ComfyUI_essentials.git && \
-    git clone --depth 1 https://github.com/Jonseed/ComfyUI-Detail-Daemon.git && \
-    git clone --depth 1 https://github.com/bash-j/mikey_nodes.git && \
-    git clone --depth 1 https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git && \
-    git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git && \
-    rm -rf /tmp/* /var/tmp/*
-
-# Install ComfyUI custom nodes - Batch 3 (heavy, without models download)
-RUN cd comfyui/custom_nodes && \
-    git clone --depth 1 --recursive https://github.com/ssitu/ComfyUI_UltimateSDUpscale.git && \
-    git clone --depth 1 https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git && \
-    git clone --depth 1 https://github.com/WASasquatch/was-node-suite-comfyui.git && \
-    git clone --depth 1 https://github.com/yolain/ComfyUI-Easy-Use.git && \
-    rm -rf /tmp/* /var/tmp/*
-# Temporarily disabled - require dependencies that conflict with system packages
-# git clone --depth 1 https://github.com/chflame163/ComfyUI_LayerStyle.git && \
-# git clone --depth 1 https://github.com/chflame163/ComfyUI_LayerStyle_Advance.git && \
-# git clone --depth 1 https://github.com/shadowcz007/comfyui-mixlab-nodes.git && \
-
-# Install ComfyUI custom nodes - Batch 4 (Impact Pack - downloads models)
-# Skip model downloads by setting environment variable
-RUN cd comfyui/custom_nodes && \
-    export SKIP_MODEL_DOWNLOAD=1 && \
-    git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Impact-Pack.git && \
-    git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git && \
-    rm -rf /tmp/* /var/tmp/*
-
-# Install requirements for ALL custom nodes in one layer (faster build)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    cd /app && \
-    for dir in /app/comfyui/custom_nodes/*; do \
+RUN pip install --no-cache-dir --pre torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+    && git clone https://github.com/comfyanonymous/ComfyUI.git comfyui \
+    && cd comfyui \
+    && git reset --hard ${COMFYUI_COMMIT} \
+    && rm -rf .git \
+    && pip install --no-cache-dir -r requirements.txt \
+    && cd custom_nodes \
+    # Clone ALL custom nodes
+    && git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git \
+    && git clone --depth 1 https://github.com/theUpsider/ComfyUI-Logic.git \
+    && git clone --depth 1 https://github.com/chrisgoringe/cg-use-everywhere.git \
+    && git clone --depth 1 https://github.com/chrisgoringe/cg-image-picker.git \
+    && git clone --depth 1 https://github.com/M1kep/ComfyLiterals.git \
+    && git clone --depth 1 https://github.com/Jordach/comfy-plasma.git \
+    && git clone --depth 1 https://github.com/ClownsharkBatwing/RES4LYF.git \
+    && git clone --depth 1 https://github.com/JPS-GER/ComfyUI_JPS-Nodes.git \
+    && git clone --depth 1 https://github.com/rgthree/rgthree-comfy.git \
+    && git clone --depth 1 https://github.com/kijai/ComfyUI-KJNodes.git \
+    && git clone --depth 1 https://github.com/cubiq/ComfyUI_essentials.git \
+    && git clone --depth 1 https://github.com/Jonseed/ComfyUI-Detail-Daemon.git \
+    && git clone --depth 1 https://github.com/bash-j/mikey_nodes.git \
+    && git clone --depth 1 https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git \
+    && git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
+    && git clone --depth 1 --recursive https://github.com/ssitu/ComfyUI_UltimateSDUpscale.git \
+    && git clone --depth 1 https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git \
+    && git clone --depth 1 https://github.com/WASasquatch/was-node-suite-comfyui.git \
+    && git clone --depth 1 https://github.com/yolain/ComfyUI-Easy-Use.git \
+    && export SKIP_MODEL_DOWNLOAD=1 \
+    && git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Impact-Pack.git \
+    && git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git \
+    # Install requirements for all custom nodes
+    && for dir in /app/comfyui/custom_nodes/*; do \
         if [ -f "$dir/requirements.txt" ]; then \
-            echo "Installing requirements for $(basename $dir)..."; \
-            pip install -r "$dir/requirements.txt" || true; \
+            pip install --no-cache-dir -r "$dir/requirements.txt" || true; \
         fi; \
         if [ -f "$dir/install.py" ]; then \
-            echo "Running install.py for $(basename $dir)..."; \
-            cd "$dir" && python install.py && cd /app || true; \
+            (cd "$dir" && python install.py) || true; \
         fi; \
     done \
-    && rm -rf /tmp/* /var/tmp/* \
+    # Install additional useful packages
+    && pip install --no-cache-dir jupyter ipython matplotlib pandas opencv-python pillow scikit-image scipy tqdm \
+    # CRITICAL: Remove ALL .git directories (saves 1-2GB)
+    && find /app/comfyui -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true \
+    # Remove large model files from custom nodes
     && find /app/comfyui/custom_nodes -name "*.pth" -size +100M -delete \
-    && find /app/comfyui/custom_nodes -name "*.safetensors" -size +100M -delete
+    && find /app/comfyui/custom_nodes -name "*.safetensors" -size +100M -delete \
+    # Clean up
+    && rm -rf /tmp/* /var/tmp/* /root/.cache/*
 
-# Install additional useful packages
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install \
-    jupyter \
-    ipython \
-    matplotlib \
-    pandas \
-    opencv-python \
-    pillow \
-    scikit-image \
-    scipy \
-    tqdm \
-    && rm -rf /tmp/* /var/tmp/*
+# Download UltraSharp upscaler + Copy configs in ONE layer
+RUN mkdir -p /app/comfyui/models/upscale_models \
+    && wget -q -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
+    "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth" \
+    && mkdir -p /app/comfyui/user/default/workflows \
+    && mkdir -p /root/.config/code-server \
+    && mkdir -p /root/.local/share/code-server/User
 
-# Download UltraSharp upscaler model (67MB)
-RUN mkdir -p /app/comfyui/models/upscale_models && \
-    wget -q -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
-    "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth" && \
-    echo "✅ UltraSharp upscaler downloaded"
-
-# Copy example workflows
-RUN mkdir -p /app/comfyui/user/default/workflows
+# Copy all config files
 COPY workflows/z_image_turbo_upscaler.json /app/comfyui/user/default/workflows/
-
-# Copy initialization and startup scripts
-COPY init.sh /app/init.sh
-COPY start.sh /app/start.sh
-RUN chmod +x /app/init.sh /app/start.sh
-
-# Copy code-server configuration
+COPY init.sh start.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
-
-# Copy VSCode settings (dark theme, etc.)
-RUN mkdir -p /root/.local/share/code-server/User
 COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.json
 
+RUN chmod +x /app/init.sh /app/start.sh
+
+# Remove build dependencies to save space (keep runtime libs)
+RUN apt-get remove -y --purge build-essential cmake ninja-build pkg-config \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 # Expose ports
-# 8080: code-server (VSCode)
-# 3000: ComfyUI
-# 22: SSH
 EXPOSE 8080 3000 22
 
 # Health check
