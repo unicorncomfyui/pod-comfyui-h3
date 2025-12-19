@@ -26,37 +26,25 @@ docker-build:
     - df -h
 
   script:
-    # Determine tags based on branch
     - |
+      # Determine tags based on branch
       if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-        TAGS="
-          -t ${IMAGE_NAME}:latest
-          -t ${IMAGE_NAME}:main
-          -t ${IMAGE_NAME}:main-${CI_COMMIT_SHORT_SHA}
-          -t ${IMAGE_NAME}:$(date +%Y%m%d)-${CI_COMMIT_SHORT_SHA}
-        "
+        TAGS="-t ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:main -t ${IMAGE_NAME}:main-${CI_COMMIT_SHORT_SHA} -t ${IMAGE_NAME}:$(date +%Y%m%d)-${CI_COMMIT_SHORT_SHA}"
       elif [ "$CI_COMMIT_BRANCH" = "develop" ]; then
-        TAGS="
-          -t ${IMAGE_NAME}:develop
-          -t ${IMAGE_NAME}:develop-${CI_COMMIT_SHORT_SHA}
-          -t ${IMAGE_NAME}:$(date +%Y%m%d)-${CI_COMMIT_SHORT_SHA}
-        "
+        TAGS="-t ${IMAGE_NAME}:develop -t ${IMAGE_NAME}:develop-${CI_COMMIT_SHORT_SHA} -t ${IMAGE_NAME}:$(date +%Y%m%d)-${CI_COMMIT_SHORT_SHA}"
       else
         TAGS="-t ${IMAGE_NAME}:${CI_COMMIT_BRANCH}-${CI_COMMIT_SHORT_SHA}"
       fi
 
-    # Build Docker image
-    - echo "Building Docker image with tags: $TAGS"
-    - docker build $TAGS .
+      echo "Building Docker image with tags: $TAGS"
+      docker build $TAGS .
 
-    # Push all tags
-    - docker push --all-tags ${IMAGE_NAME}
+      docker push --all-tags ${IMAGE_NAME}
 
-    # Display summary
-    - echo "✅ Docker image built and pushed successfully"
-    - echo "📦 Image: ${IMAGE_NAME}"
-    - echo "🏷️  Tags pushed:"
-    - docker images ${IMAGE_NAME} --format "{{.Repository}}:{{.Tag}}" | head -10
+      echo "✅ Docker image built and pushed successfully"
+      echo "📦 Image: ${IMAGE_NAME}"
+      echo "🏷️  Tags pushed:"
+      docker images ${IMAGE_NAME} --format "{{.Repository}}:{{.Tag}}" | head -10
 
   after_script:
     - docker logout
