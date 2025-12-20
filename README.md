@@ -2,7 +2,7 @@
 
 **English** | **[Français](README.fr.md)**
 
-![RunPod ComfyUI RTX4000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-Latest-orange)
+![RunPod ComfyUI RTX4000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-orange)
 
 Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for **RTX 5090** (Blackwell architecture).
 
@@ -78,7 +78,7 @@ No authentication required - RunPod handles security.
 - **No authentication**: Secured by RunPod proxy
 - **Access to /workspace**: Edit custom nodes, workflows, scripts
 - **Python 3.11 + PyTorch**: Ready for development
-- **Professional logging**: Clean output with [OK]/[ERROR]/[WARN] tags and single-line progress bars
+- **Clean logging**: Clean output with [OK]/[ERROR]/[WARN] tags
 
 ### System Diagnostics
 
