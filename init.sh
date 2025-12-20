@@ -6,6 +6,90 @@ set -e
 
 echo "Starting initialization..."
 
+# System diagnostics
+echo ""
+echo "=========================================="
+echo "SYSTEM DIAGNOSTICS"
+echo "=========================================="
+
+# GPU Information
+echo ""
+echo "--- GPU Information ---"
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv,noheader || echo "[ERROR] nvidia-smi query failed"
+    echo ""
+    echo "CUDA Driver Version:"
+    nvidia-smi | grep "CUDA Version" || echo "[ERROR] Could not detect CUDA driver version"
+else
+    echo "[ERROR] nvidia-smi not found"
+fi
+
+# CPU Information
+echo ""
+echo "--- CPU Information ---"
+lscpu | grep -E "Model name|CPU\(s\)|Thread|Core" || echo "[ERROR] Could not get CPU info"
+
+# Memory Information
+echo ""
+echo "--- Memory Information ---"
+free -h | grep -E "Mem:|Swap:" || echo "[ERROR] Could not get memory info"
+
+# Disk Space
+echo ""
+echo "--- Disk Space ---"
+df -h / /workspace 2>/dev/null || df -h /
+
+# Environment Variables
+echo ""
+echo "--- NVIDIA Environment Variables ---"
+env | grep -E "CUDA|NVIDIA" | sort || echo "No NVIDIA environment variables found"
+
+# PyTorch & CUDA Information
+echo ""
+echo "--- PyTorch & CUDA Information ---"
+python -c "
+import sys
+print(f'Python version: {sys.version.split()[0]}')
+
+try:
+    import torch
+    print(f'PyTorch version: {torch.__version__}')
+    print(f'CUDA available: {torch.cuda.is_available()}')
+    if torch.cuda.is_available():
+        print(f'CUDA version (PyTorch): {torch.version.cuda}')
+        print(f'cuDNN version: {torch.backends.cudnn.version()}')
+        print(f'GPU count: {torch.cuda.device_count()}')
+        for i in range(torch.cuda.device_count()):
+            print(f'GPU {i}: {torch.cuda.get_device_name(i)}')
+            props = torch.cuda.get_device_properties(i)
+            print(f'  Compute capability: {props.major}.{props.minor}')
+            print(f'  Total memory: {props.total_memory / 1024**3:.2f} GB')
+    else:
+        print('[ERROR] CUDA is not available to PyTorch')
+        import os
+        print(f'LD_LIBRARY_PATH: {os.environ.get(\"LD_LIBRARY_PATH\", \"Not set\")}')
+        print(f'CUDA_HOME: {os.environ.get(\"CUDA_HOME\", \"Not set\")}')
+except Exception as e:
+    print(f'[ERROR] PyTorch check failed: {e}')
+" || echo "[ERROR] Python diagnostics failed"
+
+# CUDA Toolkit Version
+echo ""
+echo "--- CUDA Toolkit Version ---"
+if [ -f "/usr/local/cuda/version.json" ]; then
+    cat /usr/local/cuda/version.json | grep -E "cuda_version|name" || echo "/usr/local/cuda/version.json found but could not parse"
+elif command -v nvcc &> /dev/null; then
+    nvcc --version | grep "release" || echo "nvcc found but could not get version"
+else
+    echo "CUDA toolkit not found in standard locations"
+fi
+
+echo ""
+echo "=========================================="
+echo "END DIAGNOSTICS"
+echo "=========================================="
+echo ""
+
 # SageAttention installation with network volume caching
 SAGE_CACHE_DIR="/workspace/sageattention_cache"
 SAGE_COMMIT="68de379"
