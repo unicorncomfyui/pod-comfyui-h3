@@ -1,10 +1,10 @@
-# RunPod ComfyUI Pod with VSCode
+# RunPod ComfyUI Pod - RTX 5090 Series
 
 **English** | **[Français](README.fr.md)**
 
-![RunPod ComfyUI VSCode](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-Latest-orange)
+![RunPod ComfyUI RTX4000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-Latest-orange)
 
-Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** for AI video/image generation and development.
+Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for **RTX 5090** (Blackwell architecture).
 
 ## Why This Pod?
 
@@ -16,7 +16,7 @@ Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** for AI video/i
 
 **SageAttention cached** - 10s cold start vs 2-3min compilation
 
-**Performance optimized** - CUDA 12.8.1, tcmalloc, PyTorch nightly for RTX 5090
+**Performance optimized** - CUDA 12.8.1, tcmalloc, PyTorch nightly for RTX 5090 (Blackwell)
 
 **Network Volume support** - Persistent models, cache, and custom nodes
 
@@ -32,7 +32,7 @@ docker pull vlop12ui/pod-comfyui-vscode:latest
 
 **[Deploy with one click](https://console.runpod.io/deploy?template=2kd0a6oy1x&ref=0f4gc2hq)**
 
-1. Select **RTX 5090** as GPU for best performance
+1. Select **RTX 4090** (or RTX 4080/4070) as GPU
 2. Set **Container Disk** to 30GB OR attach a Network Volume for persistent storage
 3. Click **Deploy**
 
@@ -51,7 +51,7 @@ No authentication required - RunPod handles security.
 |-----------|---------|---------|
 | **CUDA** | 12.8.1-cudnn | GPU runtime |
 | **Python** | 3.11 | Latest stable |
-| **PyTorch** | Nightly cu128 | RTX 5090 support (sm_120) |
+| **PyTorch** | Nightly cu128 | RTX 5090 series support (sm_89 Blackwell) |
 | **ComfyUI** | Commit 36357bb | Stable version |
 | **SageAttention** | Commit 68de379 | INT8/FP16 quantized attention |
 | **Z-Image-Turbo** | Latest | Text-to-image generation (auto-download) |
@@ -79,6 +79,14 @@ No authentication required - RunPod handles security.
 - **Access to /workspace**: Edit custom nodes, workflows, scripts
 - **Python 3.11 + PyTorch**: Ready for development
 - **Professional logging**: Clean output with [OK]/[ERROR]/[WARN] tags and single-line progress bars
+
+### System Diagnostics
+
+- **Automatic diagnostics on startup**: GPU info (name, driver, VRAM, compute capability), CUDA driver version, CPU/RAM/Disk space
+- **PyTorch CUDA check**: Verifies GPU accessibility and compatibility at pod initialization
+- **Environment inspection**: All NVIDIA/CUDA environment variables displayed
+- **CUDA toolkit version**: Container CUDA version verification
+- **Troubleshooting ready**: Complete system info for debugging compatibility issues
 
 ## Network Volume Structure
 

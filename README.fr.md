@@ -1,10 +1,10 @@
-# RunPod ComfyUI Pod avec VSCode
+# RunPod ComfyUI Pod - Série RTX 5090
 
 **[English](README.md)** | **Français**
 
-![RunPod ComfyUI VSCode](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-Latest-orange)
+![RunPod ComfyUI RTX4000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-Latest-orange)
 
-Pod RunPod persistant avec **ComfyUI** + **VSCode (code-server)** pour la génération d'images/vidéos AI et le développement.
+Pod RunPod persistant avec **ComfyUI** + **VSCode (code-server)** optimisé pour **RTX 5090** (architecture Blackwell).
 
 ## Pourquoi ce Pod ?
 
@@ -27,7 +27,7 @@ docker pull vlop12ui/pod-comfyui-vscode:latest
 
 1. Allez sur [RunPod Pods](https://www.runpod.io/console/pods)
 2. Cliquez **+ Deploy**
-3. Sélectionnez **GPU**: RTX 5090 ou A100
+3. Sélectionnez **GPU**: RTX 4090 (ou RTX 4080/4070)
 4. **Container Image**: `vlop12ui/pod-comfyui-vscode:latest`
 5. **Container Disk**: 20GB minimum
 6. **Expose Ports**: `8080, 3000`
@@ -70,6 +70,14 @@ Aucune authentification requise - RunPod gère la sécurité.
 - 🔌 **Sans authentification**: Sécurisé par proxy RunPod
 - 📂 **Accès à /workspace**: Éditer custom nodes, workflows, scripts
 - 🐍 **Python 3.11 + PyTorch**: Prêt pour le développement
+
+### Diagnostics Système
+
+- 🔍 **Diagnostics automatiques au démarrage**: Info GPU (nom, driver, VRAM, compute capability), version CUDA driver, CPU/RAM/Disque
+- ✅ **Vérification PyTorch CUDA**: Vérifie l'accessibilité GPU et compatibilité à l'initialisation
+- 📋 **Inspection environnement**: Toutes les variables d'environnement NVIDIA/CUDA affichées
+- 🛠️ **Version CUDA toolkit**: Vérification version CUDA du container
+- 🐛 **Prêt pour débogage**: Info système complète pour diagnostiquer les problèmes de compatibilité
 
 ## Structure Network Volume
 
