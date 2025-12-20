@@ -1,8 +1,8 @@
 # RunPod ComfyUI Pod with VSCode - RTX 5090 (OPTIMIZED)
 # Optimized for RTX 5090 with CUDA 12.8.1, SageAttention, and code-server
-# Base: Ubuntu 22.04 + CUDA 12.8.1-cudnn
+# Base: Ubuntu 24.04 + CUDA 12.8.1-cudnn
 
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
 # Metadata
 LABEL maintainer="ComfyUI Pod VSCode RTX5090"
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 python3.11-dev python3.11-venv python3-pip \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel \
     && curl -fsSL https://code-server.dev/install.sh | sh -s -- --version=4.96.2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -112,10 +112,14 @@ COPY init.sh start.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
 COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.json
 
-RUN chmod +x /app/init.sh /app/start.sh
+# Fix line endings (Windows CRLF -> Linux LF) and make executable
+RUN sed -i 's/\r$//' /app/init.sh /app/start.sh \
+    && chmod +x /app/init.sh /app/start.sh
 
-# Remove build dependencies to save space (keep runtime libs)
-RUN apt-get remove -y --purge build-essential cmake ninja-build pkg-config \
+# Remove SOME build dependencies to save space (keep CUDA compilers for runtime compilation)
+# Keep: build-essential, cmake, ninja-build (required for SageAttention runtime compilation)
+# Remove: pkg-config (not needed at runtime)
+RUN apt-get remove -y --purge pkg-config \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
