@@ -25,7 +25,7 @@ Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for 
 ### 1. Pull Pre-built Image
 
 ```bash
-docker pull vlop12ui/pod-comfyui-vscode:latest
+docker pull <username>/pod-comfyui-vscode:latest
 ```
 
 ### 2. Deploy on RunPod
@@ -215,8 +215,8 @@ Verify in RunPod dashboard:
 
 This repository uses Git Flow with two main branches:
 
-- **`main`**: Stable production-ready images. Pull from `vlop12ui/pod-comfyui-vscode:main` or `:latest` for stable deployments.
-- **`develop`**: Development branch with new features and updates. Pull from `vlop12ui/pod-comfyui-vscode:develop` for testing.
+- **`main`**: Stable production-ready images. Pull from `<username>/pod-comfyui-vscode:main` or `:latest` for stable deployments.
+- **`develop`**: Development branch with new features and updates. Pull from `<username>/pod-comfyui-vscode:develop` for testing.
 
 Docker images are automatically built and tagged for both branches on every push via GitHub Actions.
 

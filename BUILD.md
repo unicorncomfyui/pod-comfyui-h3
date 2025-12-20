@@ -15,15 +15,15 @@ Set your Docker Hub credentials:
 
 ```bash
 # Windows PowerShell
-$env:DOCKER_USERNAME="vlop12ui"
+$env:DOCKER_USERNAME="your-dockerhub-username"
 $env:DOCKER_PASSWORD="your-docker-hub-token"
 
 # Windows CMD
-set DOCKER_USERNAME=vlop12ui
+set DOCKER_USERNAME=your-dockerhub-username
 set DOCKER_PASSWORD=your-docker-hub-token
 
 # Linux/macOS
-export DOCKER_USERNAME="vlop12ui"
+export DOCKER_USERNAME="your-dockerhub-username"
 export DOCKER_PASSWORD="your-docker-hub-token"
 ```
 
@@ -59,15 +59,15 @@ This will:
 ## What Gets Created
 
 For **develop** branch:
-- `vlop12ui/pod-comfyui-vscode:develop`
-- `vlop12ui/pod-comfyui-vscode:develop-abc1234` (commit SHA)
-- `vlop12ui/pod-comfyui-vscode:20251220-abc1234` (date + SHA)
+- `<username>/pod-comfyui-vscode:develop`
+- `<username>/pod-comfyui-vscode:develop-abc1234` (commit SHA)
+- `<username>/pod-comfyui-vscode:20251220-abc1234` (date + SHA)
 
 For **main** branch:
-- `vlop12ui/pod-comfyui-vscode:latest`
-- `vlop12ui/pod-comfyui-vscode:main`
-- `vlop12ui/pod-comfyui-vscode:main-abc1234`
-- `vlop12ui/pod-comfyui-vscode:20251220-abc1234`
+- `<username>/pod-comfyui-vscode:latest`
+- `<username>/pod-comfyui-vscode:main`
+- `<username>/pod-comfyui-vscode:main-abc1234`
+- `<username>/pod-comfyui-vscode:20251220-abc1234`
 
 ## Disk Space Management
 
@@ -155,12 +155,12 @@ If you prefer manual control:
 
 ```bash
 # Build
-docker build -t vlop12ui/pod-comfyui-vscode:develop .
+docker build -t <username>/pod-comfyui-vscode:develop .
 
 # Push
-docker push vlop12ui/pod-comfyui-vscode:develop
+docker push <username>/pod-comfyui-vscode:develop
 
 # Clean up
-docker image rm vlop12ui/pod-comfyui-vscode:develop
+docker image rm <username>/pod-comfyui-vscode:develop
 docker image prune -f
 ```

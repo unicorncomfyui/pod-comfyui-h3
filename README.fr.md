@@ -20,7 +20,7 @@ Pod RunPod persistant avec **ComfyUI** + **VSCode (code-server)** optimisé pour
 ### 1. Récupérer l'Image Pré-construite
 
 ```bash
-docker pull vlop12ui/pod-comfyui-vscode:latest
+docker pull <username>/pod-comfyui-vscode:latest
 ```
 
 ### 2. Déployer sur RunPod
@@ -28,7 +28,7 @@ docker pull vlop12ui/pod-comfyui-vscode:latest
 1. Allez sur [RunPod Pods](https://www.runpod.io/console/pods)
 2. Cliquez **+ Deploy**
 3. Sélectionnez **GPU**: RTX 4090 (ou RTX 4080/4070)
-4. **Container Image**: `vlop12ui/pod-comfyui-vscode:latest`
+4. **Container Image**: `<username>/pod-comfyui-vscode:latest`
 5. **Container Disk**: 20GB minimum
 6. **Expose Ports**: `8080, 3000`
 7. **(Optionnel)** Attacher un Network Volume
