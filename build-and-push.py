@@ -187,16 +187,13 @@ def main():
         TAGS = [f"{IMAGE_NAME}:{BRANCH}-{COMMIT_SHA}"]
     elif BRANCH == "main":
         TAGS = [
-            f"{IMAGE_NAME}:latest",
             f"{IMAGE_NAME}:main",
-            f"{IMAGE_NAME}:main-{COMMIT_SHA}",
-            f"{IMAGE_NAME}:{BUILD_DATE}-{COMMIT_SHA}"
+            f"{IMAGE_NAME}:main-{COMMIT_SHA}"
         ]
     elif BRANCH == "develop":
         TAGS = [
             f"{IMAGE_NAME}:develop",
-            f"{IMAGE_NAME}:develop-{COMMIT_SHA}",
-            f"{IMAGE_NAME}:{BUILD_DATE}-{COMMIT_SHA}"
+            f"{IMAGE_NAME}:develop-{COMMIT_SHA}"
         ]
     else:
         TAGS = [f"{IMAGE_NAME}:{BRANCH}-{COMMIT_SHA}"]
