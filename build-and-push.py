@@ -182,29 +182,15 @@ def main():
     BUILD_DATE = datetime.now().strftime("%Y%m%d")
 
     # Determine tags based on branch
-    if local_mode:
-        # Local mode: single tag (branch-commit) for efficient builds
-        TAGS = [f"{IMAGE_NAME}:{BRANCH}-{COMMIT_SHA}"]
-    elif BRANCH == "main":
-        TAGS = [
-            f"{IMAGE_NAME}:main",
-            f"{IMAGE_NAME}:main-{COMMIT_SHA}"
-        ]
-    elif BRANCH == "develop":
-        TAGS = [
-            f"{IMAGE_NAME}:develop",
-            f"{IMAGE_NAME}:develop-{COMMIT_SHA}"
-        ]
-    else:
-        TAGS = [f"{IMAGE_NAME}:{BRANCH}-{COMMIT_SHA}"]
+    # Simple strategy: only branch-SHA tag for traceability
+    TAGS = [f"{IMAGE_NAME}:{BRANCH}-{COMMIT_SHA}"]
 
     # Print header
     print("=" * 50)
     print(f"Building Docker image: {IMAGE_NAME}")
-    print(f"Mode: {'LOCAL (1 tag, push, cleanup)' if local_mode else 'PRODUCTION (multi-tag, push, cleanup)'}")
     print(f"Branch: {BRANCH}")
     print(f"Commit: {COMMIT_SHA}")
-    print(f"Tags: {', '.join(TAGS)}")
+    print(f"Tag: {TAGS[0].split(':')[1]}")
     print("=" * 50)
 
     # Clean up Docker before build to free space
@@ -294,10 +280,8 @@ def main():
     print("\n" + "=" * 50)
     print("✅ Build, push, and cleanup completed!")
     print(f"📦 Image: {IMAGE_NAME}")
-    print(f"🏷️  Tags pushed: {len(TAGS)} - {', '.join([t.split(':')[1] for t in TAGS])}")
+    print(f"🏷️  Tag: {TAGS[0].split(':')[1]}")
     print("💾 Local disk space freed")
-    if local_mode:
-        print("🏠 Local mode: 1 tag only (~22GB saved)")
     print("=" * 50)
 
 
