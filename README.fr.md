@@ -2,7 +2,7 @@
 
 **[English](README.md)** | **Français**
 
-![RunPod ComfyUI RTX4000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-orange)
+![RunPod ComfyUI RTX5000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-orange)
 
 Pod RunPod persistant avec **ComfyUI** + **VSCode (code-server)** optimisé pour **RTX 5090** (architecture Blackwell).
 
@@ -27,7 +27,7 @@ docker pull <username>/pod-comfyui-vscode:latest
 
 1. Allez sur [RunPod Pods](https://www.runpod.io/console/pods)
 2. Cliquez **+ Deploy**
-3. Sélectionnez **GPU**: RTX 4090 (ou RTX 4080/4070)
+3. Sélectionnez **GPU**: RTX 5090
 4. **Container Image**: `<username>/pod-comfyui-vscode:latest`
 5. **Container Disk**: 20GB minimum
 6. **Expose Ports**: `8080, 3000`
