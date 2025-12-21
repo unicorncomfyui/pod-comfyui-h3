@@ -1,0 +1,13 @@
+{
+  "workbench.colorTheme": "Default Dark Modern",
+  "workbench.preferredDarkColorTheme": "Default Dark Modern",
+  "window.autoDetectColorScheme": false,
+  "editor.fontSize": 14,
+  "editor.tabSize": 4,
+  "editor.insertSpaces": true,
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+  "python.defaultInterpreterPath": "/usr/bin/python3",
+  "git.enableSmartCommit": true,
+  "git.confirmSync": false
+}

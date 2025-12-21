@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  comfyui-vscode:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pod-comfyui-vscode:latest
+    container_name: pod-comfyui-vscode
+
+    ports:
+      - "8080:8080"  # VSCode
+      - "3000:3000"  # ComfyUI
+
+    environment:
+      - VSCODE_PORT=8080
+      - COMFYUI_PORT=3000
+
+    volumes:
+      - ./workspace:/workspace
+      - ./models:/app/comfyui/models
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    runtime: nvidia
+
+    stdin_open: true
+    tty: true
+
+    restart: unless-stopped

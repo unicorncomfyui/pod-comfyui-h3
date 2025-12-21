@@ -1,93 +1,241 @@
-# rtx5000
+# RunPod ComfyUI Pod - RTX 5090 Series
 
+**English** | **[Français](README.fr.md)**
 
+![RunPod ComfyUI RTX4000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-orange)
 
-## Getting started
+Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for **RTX 5090** (Blackwell architecture).
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Why This Pod?
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+**Ready to go** - No dependency on public pods, your own persistent environment
 
-## Add your files
+**VSCode web interface** - Full IDE in your browser with terminal access
 
-* [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+**Z-Image-Turbo ready** - 6B parameter photorealistic image generation (auto-download)
+
+**SageAttention cached** - 10s cold start vs 2-3min compilation
+
+**Performance optimized** - CUDA 12.8.1, tcmalloc, PyTorch nightly for RTX 5090 (Blackwell)
+
+**Network Volume support** - Persistent models, cache, and custom nodes
+
+## Quick Start
+
+### 1. Pull Pre-built Image
+
+```bash
+docker pull <username>/pod-comfyui-vscode:latest
+```
+
+### 2. Deploy on RunPod
+
+**[Deploy with one click](https://console.runpod.io/deploy?template=2kd0a6oy1x&ref=0f4gc2hq)**
+
+1. Select **RTX 4090** (or RTX 4080/4070) as GPU
+2. Set **Container Disk** to 30GB OR attach a Network Volume for persistent storage
+3. Click **Deploy**
+
+### 3. Access Your Pod
+
+Once deployed, RunPod will provide URLs:
+
+- **VSCode**: `https://your-pod-id-8080.proxy.runpod.net`
+- **ComfyUI**: `https://your-pod-id-3000.proxy.runpod.net`
+
+No authentication required - RunPod handles security.
+
+## Stack
+
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| **CUDA** | 12.8.1-cudnn | GPU runtime |
+| **Python** | 3.11 | Latest stable |
+| **PyTorch** | Nightly cu128 | RTX 5090 series support (sm_89 Blackwell) |
+| **ComfyUI** | Commit 36357bb | Stable version |
+| **SageAttention** | Commit 68de379 | INT8/FP16 quantized attention |
+| **Z-Image-Turbo** | Latest | Text-to-image generation (auto-download) |
+| **UltraSharp** | 4x upscaler | ESRGAN upscaler (67MB, included) |
+| **code-server** | 4.96.2 | VSCode in browser |
+| **tcmalloc** | Latest | Memory optimization |
+
+## Features
+
+### ComfyUI Optimizations
+
+- **SageAttention caching**: ~10s cold start (vs 2-3min without cache)
+- **WAN 2.2 ready**: Text-to-video and image-to-video workflows
+- **Z-Image-Turbo auto-download**: Automatic model download to network volume (diffusion model, text encoder, VAE)
+- **UltraSharp 4x upscaler**: Pre-installed ESRGAN upscaler (67MB)
+- **Example workflows**: Z-Image-Turbo with upscaling demonstration
+- **tcmalloc enabled**: Efficient memory management
+- **Network Volume support**: Persistent models and cache
+- **Auto-initialization**: ComfyUI automatically copied to network volume on first run
+
+### Development Environment
+
+- **VSCode in browser**: Full IDE with terminal
+- **No authentication**: Secured by RunPod proxy
+- **Access to /workspace**: Edit custom nodes, workflows, scripts
+- **Python 3.11 + PyTorch**: Ready for development
+- **Clean logging**: Clean output with [OK]/[ERROR]/[WARN] tags
+
+### System Diagnostics
+
+- **Automatic diagnostics on startup**: GPU info (name, driver, VRAM, compute capability), CUDA driver version, CPU/RAM/Disk space
+- **PyTorch CUDA check**: Verifies GPU accessibility and compatibility at pod initialization
+- **Environment inspection**: All NVIDIA/CUDA environment variables displayed
+- **CUDA toolkit version**: Container CUDA version verification
+- **Troubleshooting ready**: Complete system info for debugging compatibility issues
+
+## Network Volume Structure
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/comfyui_infrastructure/pods/rtx5000.git
-git branch -M main
-git push -uf origin main
+/workspace/  (mounted from /runpod-volume)
+├── ComfyUI/                    # ComfyUI installation
+│   ├── models/
+│   │   ├── checkpoints/        # Your models (.safetensors)
+│   │   ├── diffusion_models/   # Z-Image-Turbo diffusion model (auto-downloaded)
+│   │   ├── clip/               # Text encoders (Qwen, auto-downloaded)
+│   │   ├── vae/                # VAE models (auto-downloaded)
+│   │   ├── unet/               # UNet models
+│   │   ├── loras/              # LoRA models
+│   │   └── upscale_models/     # UltraSharp 4x (pre-installed)
+│   ├── custom_nodes/           # 16 custom nodes installed
+│   ├── output/                 # Generated images/videos
+│   ├── input/                  # Source images
+│   └── user/default/workflows/ # Example Z-Image-Turbo workflow
+├── sageattention_cache/        # SageAttention compiled cache
+│   ├── SageAttention/
+│   └── .commit_hash
+└── your-projects/              # Your dev projects
 ```
 
-## Integrate with your tools
+## Performance
 
-* [Set up project integrations](https://gitlab.com/comfyui_infrastructure/pods/rtx5000/-/settings/integrations)
+### Startup Times
 
-## Collaborate with your team
+- **With SageAttention cache** (Network Volume): ~10-15s
+- **Without cache** (first start): ~2-3min (compilation)
+- **Cache validation**: Automatic via commit hash
 
-* [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+### Generation Times (RTX 5090)
 
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+| Workflow | Resolution | Frames | Time |
+|----------|-----------|--------|------|
+| Z-Image-Turbo | 1024x1024 | 1 | ~2-4s |
+| Z-Image-Turbo | 1080x1920 | 1 | ~3-5s |
+| WAN 2.2 t2v | 720p | 61 | ~50-55s |
 
 ## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### Accessing Services
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+1. **VSCode**: Click the `8080` port link in RunPod dashboard
+   - Edit custom nodes in `/workspace/ComfyUI/custom_nodes/`
+   - Create workflows
+   - Python development
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+2. **ComfyUI**: Click the `3000` port link in RunPod dashboard
+   - Load workflows
+   - Generate images/videos
+   - Test custom nodes
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+### Adding Custom Nodes
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+Via VSCode terminal:
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+cd /workspace/ComfyUI/custom_nodes
+git clone https://github.com/your-custom-node.git
+cd your-custom-node
+pip install -r requirements.txt
+```
+
+Then restart ComfyUI (stop/start pod).
+
+### Adding Models
+
+Upload via VSCode file explorer or terminal:
+
+```bash
+# In /workspace/ComfyUI/models/checkpoints/
+# Upload your .safetensors files
+```
+
+## Local Development
+
+```bash
+git clone https://github.com/yourusername/pod-comfyui-vscode.git
+cd pod-comfyui-vscode
+docker-compose up --build
+```
+
+Access:
+- VSCode: http://localhost:8080
+- ComfyUI: http://localhost:3000
+
+## Troubleshooting
+
+### SageAttention fails to compile
+
+```bash
+# In VSCode terminal or SSH
+rm -rf /workspace/sageattention_cache
+# Restart pod
+```
+
+### ComfyUI not loading models
+
+Check models directory:
+
+```bash
+ls -la /workspace/ComfyUI/models/checkpoints/
+```
+
+Make sure files have correct permissions.
+
+### Port not accessible
+
+Verify in RunPod dashboard:
+- Pod is running
+- Ports 8080 and 3000 are exposed
+- Click the port link (not direct IP)
+
+## Cost Estimation
+
+**RTX 5090** (~$0.90/hour):
+- Development time: Billed per hour
+- Active use recommended: 4-8 hours/day
+- Cost: ~$3.60-$7.20/day for active development
+
+**Tip**: Stop pod when not in use to save costs.
+
+## Git Workflow
+
+This repository uses Git Flow with two main branches:
+
+- **`main`**: Stable production-ready images. Pull from `<username>/pod-comfyui-vscode:main` or `:latest` for stable deployments.
+- **`develop`**: Development branch with new features and updates. Pull from `<username>/pod-comfyui-vscode:develop` for testing.
+
+Docker images are automatically built and tagged for both branches on every push via GitHub Actions.
+
+**Available Tags:**
+- `main` / `latest` - Latest stable release
+- `develop` - Latest development build
+- `main-{sha}` / `develop-{sha}` - Specific commit builds
+- `{date}-{sha}` - Date-tagged builds for chronological tracking
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+AGPL-3.0 (inherited from ComfyUI)
+
+---
+
+**Developed for RunPod Pods**
+- Base: CUDA 12.8.1 + cuDNN + Ubuntu 24.04
+- Python 3.11 + PyTorch nightly
+- ComfyUI + VSCode
+- Optimized for RTX 5090
+
+*Last update: December 2025*
