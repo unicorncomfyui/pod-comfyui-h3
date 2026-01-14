@@ -86,17 +86,18 @@ Images are only stored on Docker Hub, not locally.
 ## Build Time Estimates
 
 On RTX 3080 with 200GB disk:
-- First build: ~20-30 minutes (downloads base images, PyTorch nightly)
+- First build: ~20-30 minutes (downloads base images, PyTorch 2.8.0+cu129, compiles SageAttention v2.2.0)
 - Subsequent builds: ~10-15 minutes (Docker layer cache)
 - Push to Docker Hub: ~8-12 minutes (larger image than rtx3000)
 - **Total: ~25-40 minutes** (vs 60+ minutes or failures on GitLab)
+- **Note**: SageAttention is pre-compiled in image for instant pod startup (0s)
 
 ## Advantages Over GitLab CI/CD
 
 1. **Faster**: 2-3x faster with local Docker cache
 2. **More reliable**: No runner failures, no disk space errors
 3. **More disk space**: 200GB vs 10-12GB on shared runners
-4. **GPU acceleration**: Helps with CUDA 12.8.1 compilation
+4. **GPU acceleration**: Helps with CUDA 12.9.0 compilation
 5. **Zero local storage**: Auto-cleanup after push
 6. **Full control**: See real-time progress, debug issues
 
@@ -113,8 +114,8 @@ Make sure `DOCKER_USERNAME` and `DOCKER_PASSWORD` are set correctly.
 Install Git for Windows or make sure it's in PATH.
 
 ### Build is slow
-- First build downloads large base images (CUDA 12.8.1)
-- PyTorch nightly is larger than stable
+- First build downloads large base images (CUDA 12.9.0 without cuDNN)
+- PyTorch 2.8.0+cu129 includes cuDNN 9.10.2 bundled (optimized for RTX 5090)
 - Subsequent builds will be much faster due to layer cache
 - Consider building on SSD instead of HDD
 

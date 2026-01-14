@@ -1,8 +1,9 @@
 # RunPod ComfyUI Pod with VSCode - RTX 5090 (OPTIMIZED)
-# Optimized for RTX 5090 with CUDA 12.8.1, SageAttention, and code-server
-# Base: Ubuntu 24.04 + CUDA 12.8.1-cudnn
+# Optimized for RTX 5090 with CUDA 12.9, SageAttention, and code-server
+# Base: Ubuntu 24.04 + CUDA 12.9 (cuDNN 9.10.2 bundled in PyTorch)
+# Compatible with NVIDIA Driver 565+ (RunPod compatible)
 
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:12.9.0-devel-ubuntu24.04
 
 # Metadata
 LABEL maintainer="ComfyUI Pod VSCode RTX5090"
@@ -15,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     PATH="${CUDA_HOME}/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}" \
-    TORCH_CUDA_ARCH_LIST="8.9" \
+    TORCH_CUDA_ARCH_LIST="12.0" \
     COMFYUI_PORT=3000 \
     VSCODE_PORT=8080 \
     CHECK_MODELS=true
@@ -45,11 +46,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Install PyTorch nightly + ComfyUI + ALL custom nodes in ONE optimized layer
+# Install PyTorch 2.8.0+cu129 + SageAttention + ComfyUI + ALL custom nodes in ONE optimized layer
 WORKDIR /app
 ARG COMFYUI_COMMIT=36357bb
-RUN pip install --no-cache-dir --pre torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+RUN pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu129 \
+    # Compile SageAttention v2.2.0 (eb615cf) for RTX 5090 (sm_12.0)
+    && git clone https://github.com/thu-ml/SageAttention.git /tmp/sageattention \
+    && cd /tmp/sageattention \
+    && git checkout eb615cf \
+    && TORCH_CUDA_ARCH_LIST="12.0" python setup.py build_ext --inplace \
+    && pip install --no-build-isolation --no-deps . \
+    && cd / \
+    && rm -rf /tmp/sageattention \
     && git clone https://github.com/comfyanonymous/ComfyUI.git comfyui \
     && cd comfyui \
     && git reset --hard ${COMFYUI_COMMIT} \
@@ -116,10 +125,8 @@ COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.js
 RUN sed -i 's/\r$//' /app/init.sh /app/start.sh \
     && chmod +x /app/init.sh /app/start.sh
 
-# Remove SOME build dependencies to save space (keep CUDA compilers for runtime compilation)
-# Keep: build-essential, cmake, ninja-build (required for SageAttention runtime compilation)
-# Remove: pkg-config (not needed at runtime)
-RUN apt-get remove -y --purge pkg-config \
+# Remove build dependencies to save space (SageAttention is pre-compiled in image)
+RUN apt-get remove -y --purge build-essential cmake ninja-build pkg-config \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

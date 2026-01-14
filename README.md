@@ -2,7 +2,7 @@
 
 **English** | **[Français](README.fr.md)**
 
-![RunPod ComfyUI RTX5000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.8.1-green) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-orange)
+![RunPod ComfyUI RTX5000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.9-green) ![cuDNN](https://img.shields.io/badge/cuDNN-9.10.2-orange) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0+cu129-red) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-purple)
 
 Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for **RTX 5090** (Blackwell architecture).
 
@@ -14,9 +14,9 @@ Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for 
 
 **Z-Image-Turbo ready** - 6B parameter photorealistic image generation (auto-download)
 
-**SageAttention cached** - 10s cold start vs 2-3min compilation
+**SageAttention pre-compiled** - Instant startup (0s) - compiled in image
 
-**Performance optimized** - CUDA 12.8.1, tcmalloc, PyTorch nightly for RTX 5090 (Blackwell)
+**Performance optimized** - CUDA 12.9.0, tcmalloc, PyTorch 2.8.0+cu129 for RTX 5090 (Blackwell)
 
 **Network Volume support** - Persistent models, cache, and custom nodes
 
@@ -49,11 +49,13 @@ No authentication required - RunPod handles security.
 
 | Component | Version | Purpose |
 |-----------|---------|---------|
-| **CUDA** | 12.8.1-cudnn | GPU runtime |
+| **CUDA** | 12.9.0 | GPU runtime |
+| **cuDNN** | 9.10.2 | Bundled in PyTorch (optimized for Blackwell) |
 | **Python** | 3.11 | Latest stable |
-| **PyTorch** | Nightly cu128 | RTX 5090 series support (sm_89 Blackwell) |
+| **PyTorch** | 2.8.0+cu129 | RTX 5090 series support (sm_12.0 Blackwell) |
+| **NVIDIA Driver** | 565+ | Required for CUDA 12.9 compatibility |
 | **ComfyUI** | Commit 36357bb | Stable version |
-| **SageAttention** | Commit 68de379 | INT8/FP16 quantized attention |
+| **SageAttention** | v2.2.0 (eb615cf) | INT8/FP16 quantized attention (sm_12.0 optimized) |
 | **Z-Image-Turbo** | Latest | Text-to-image generation (auto-download) |
 | **UltraSharp** | 4x upscaler | ESRGAN upscaler (67MB, included) |
 | **code-server** | 4.96.2 | VSCode in browser |
@@ -63,7 +65,7 @@ No authentication required - RunPod handles security.
 
 ### ComfyUI Optimizations
 
-- **SageAttention caching**: ~10s cold start (vs 2-3min without cache)
+- **SageAttention pre-compiled**: Instant startup (0s) - compiled directly in Docker image
 - **WAN 2.2 ready**: Text-to-video and image-to-video workflows
 - **Z-Image-Turbo auto-download**: Automatic model download to network volume (diffusion model, text encoder, VAE)
 - **UltraSharp 4x upscaler**: Pre-installed ESRGAN upscaler (67MB)
@@ -115,8 +117,9 @@ No authentication required - RunPod handles security.
 
 ### Startup Times
 
-- **With SageAttention cache** (Network Volume): ~10-15s
-- **Without cache** (first start): ~2-3min (compilation)
+- **With wheel cache** (Network Volume): ~5-10s (instant pip install)
+- **With source cache** (fallback): ~1-2min (CUDA extensions reinstall)
+- **Without cache** (first start): ~2-3min (full compilation)
 - **Cache validation**: Automatic via commit hash
 
 ### Generation Times (RTX 5090)
@@ -233,9 +236,9 @@ AGPL-3.0 (inherited from ComfyUI)
 ---
 
 **Developed for RunPod Pods**
-- Base: CUDA 12.8.1 + cuDNN + Ubuntu 24.04
-- Python 3.11 + PyTorch nightly
+- Base: CUDA 12.9.0 + Ubuntu 24.04
+- Python 3.11 + PyTorch 2.8.0+cu129 (cuDNN 9.10.2 bundled)
 - ComfyUI + VSCode
-- Optimized for RTX 5090
+- Optimized for RTX 5090 with NVIDIA Driver 565+
 
 *Last update: December 2025*
