@@ -6,13 +6,13 @@ Matrice de compatibilité des versions critiques pour différentes configuration
 
 | CUDA Toolkit | GPU Support | PyTorch | RunPod Availability | Status |
 |--------------|-------------|---------|---------------------|--------|
-| **12.9.0** | RTX 5090 (sm_12.0), RTX 4090 (sm_8.9) | 2.8.0+cu129 | Limité (nouveaux pods) | ✅ **CURRENT** |
-| **12.8.1** | RTX 4090 (sm_8.9), RTX 4080 (sm_8.9) | 2.8.0+cu128, 2.6.0 | Large disponibilité | 🔄 Compatible |
-| **12.6.0** | RTX 4090 (sm_8.9), RTX 3090 (sm_8.6) | 2.5.0, 2.4.0 | Large disponibilité | ⚠️ Legacy |
+| **12.9.0** | RTX 5090 (sm_12.0), RTX 4090 (sm_8.9) | 2.8.0+cu129 | Limité (nouveaux pods) | **CURRENT** |
+| **12.8.1** | RTX 4090 (sm_8.9), RTX 4080 (sm_8.9) | 2.8.0+cu128, 2.6.0 | Large disponibilité | Compatible |
+| **12.6.0** | RTX 4090 (sm_8.9), RTX 3090 (sm_8.6) | 2.5.0, 2.4.0 | Large disponibilité | Legacy |
 
 ---
 
-## 🧩 Component Deep Dive - Rôle et Gains de Performance
+## Component Deep Dive - Rôle et Gains de Performance
 
 Comprendre ce que fait chaque brique et son impact sur les performances.
 
@@ -62,7 +62,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Support sm_12.0**: instructions spécifiques Blackwell (FP8, tensor cores gen4)
 - **cuDNN 9.10.2 bundled**: optimisations attention mechanisms
 
-**Performance impact**: ⭐⭐⭐⭐⭐ (Critique - tout passe par CUDA)
+**Performance impact**: Critical (5/5) - tout passe par CUDA
 
 ---
 
@@ -87,7 +87,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Support FP8**: +30-40% throughput sur RTX 5090 (vs FP16)
 - **-15% VRAM usage** pour grandes batch sizes
 
-**Performance impact**: ⭐⭐⭐⭐⭐ (Critique - utilisé par chaque layer du modèle)
+**Performance impact**: Critical (5/5) - utilisé par chaque layer du modèle
 
 **Note importante**: PyTorch 2.8.0+cu129 bundle cuDNN 9.10.2, donc pas besoin dans base image
 
@@ -116,7 +116,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Flash Attention 3 support**: +40% vitesse attention (vs FA2)
 - **Triton 3.1**: génération kernels optimisés automatiques
 
-**Performance impact**: ⭐⭐⭐⭐⭐ (Critique - cœur du système)
+**Performance impact**: Critical (5/5) - cœur du système
 
 **ComfyUI specifics**:
 - ComfyUI utilise PyTorch pour charger modèles Stable Diffusion
@@ -148,14 +148,14 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Qualité préservée**: imperceptible quality loss (<0.1% error)
 - **Pas de retraining**: drop-in replacement pour modèles existants
 
-**Performance impact**: ⭐⭐⭐⭐ (Très important - attention = 60-70% du temps de génération)
+**Performance impact**: Very High (4/5) - attention = 60-70% du temps de génération
 
 **ComfyUI specifics**:
 - ComfyUI peut utiliser SageAttention automatiquement si installé
 - Gain massif sur modèles Transformer-based (FLUX, SD3, Z-Image-Turbo)
 - Permet de générer images plus grandes (1024→2048px) avec même VRAM
 
-**Architecture dependency**: ⚠️ DOIT être compilé pour la bonne architecture GPU (sm_12.0 pour RTX 5090)
+**Architecture dependency**: CRITICAL - DOIT être compilé pour la bonne architecture GPU (sm_12.0 pour RTX 5090)
 
 ---
 
@@ -180,7 +180,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Support sm_12.0**: exploitation tensor cores Blackwell
 - **Meilleur auto-tuning**: trouve configs optimales +5-10% plus rapides
 
-**Performance impact**: ⭐⭐⭐ (Important si torch.compile activé, sinon limité)
+**Performance impact**: High (3/5) - important si torch.compile activé, sinon limité
 
 **ComfyUI specifics**:
 - Triton utilisé en backend par PyTorch (transparent)
@@ -207,7 +207,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **+10-20% multi-thread perf** (DataLoaders, custom nodes parallèles)
 - **Pas d'overhead**: activation via LD_PRELOAD (0 modification code)
 
-**Performance impact**: ⭐⭐ (Utile mais pas critique - impact surtout sur RAM CPU)
+**Performance impact**: Medium (2/5) - utile mais pas critique, impact surtout sur RAM CPU
 
 **ComfyUI specifics**:
 - Améliore la gestion mémoire de ComfyUI (chargement modèles, caching)
@@ -237,7 +237,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Optimisations**: +2-5% perf générale sur nouvelles générations GPU
 - **Pas de backward compat breaking**: driver récent = compatible anciens CUDA
 
-**Performance impact**: ⭐⭐ (Important pour compatibilité, impact perf limité)
+**Performance impact**: Medium (2/5) - important pour compatibilité, impact perf limité
 
 **Note**: Sur RunPod, le driver est géré par l'host, pas par le container
 
@@ -257,7 +257,7 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 - **Meilleure gestion exceptions**: -20% overhead try/except
 - **Compatibilité**: large ecosystem compatible
 
-**Performance impact**: ⭐ (Faible - bottleneck = GPU, pas CPU Python)
+**Performance impact**: Low (1/5) - bottleneck = GPU, pas CPU Python
 
 **ComfyUI specifics**:
 - ComfyUI écrit en Python
@@ -266,20 +266,20 @@ Comprendre ce que fait chaque brique et son impact sur les performances.
 
 ---
 
-## 📊 Résumé des Gains Cumulatifs
+## Résumé des Gains Cumulatifs
 
 Configuration **CUDA 12.9.0 RTX 5090** (current) vs **CUDA 12.6.0 RTX 4090** (legacy):
 
 | Composant | Gain Performance | Importance |
 |-----------|------------------|------------|
-| **RTX 5090 GPU** | +35-45% TFLOPS | ⭐⭐⭐⭐⭐ Hardware |
-| **CUDA 12.9 + sm_12.0** | +15-20% utilization | ⭐⭐⭐⭐⭐ Critical |
-| **cuDNN 9.10.2** | +12-18% attention | ⭐⭐⭐⭐⭐ Critical |
-| **PyTorch 2.8.0** | +20-25% inference | ⭐⭐⭐⭐⭐ Critical |
-| **SageAttention v2.2.0** | +35-50% attention | ⭐⭐⭐⭐ Very High |
-| **Triton 3.1.0** | +10-20% fused ops | ⭐⭐⭐ High |
-| **tcmalloc** | +5-15% allocations | ⭐⭐ Medium |
-| **Driver 565+** | +2-5% stability | ⭐⭐ Medium |
+| **RTX 5090 GPU** | +35-45% TFLOPS | Critical (5/5) - Hardware |
+| **CUDA 12.9 + sm_12.0** | +15-20% utilization | Critical (5/5) |
+| **cuDNN 9.10.2** | +12-18% attention | Critical (5/5) |
+| **PyTorch 2.8.0** | +20-25% inference | Critical (5/5) |
+| **SageAttention v2.2.0** | +35-50% attention | Very High (4/5) |
+| **Triton 3.1.0** | +10-20% fused ops | High (3/5) |
+| **tcmalloc** | +5-15% allocations | Medium (2/5) |
+| **Driver 565+** | +2-5% stability | Medium (2/5) |
 
 **Gain cumulatif estimé**: **+60-80% vitesse génération** (RTX 5090 CUDA 12.9 optimisé vs RTX 4090 CUDA 12.6)
 
@@ -290,7 +290,7 @@ Configuration **CUDA 12.9.0 RTX 5090** (current) vs **CUDA 12.6.0 RTX 4090** (le
 
 ---
 
-## 🎯 Impact sur ComfyUI Workflows
+## Impact sur ComfyUI Workflows
 
 ### Génération d'Image 1024x1024 (FLUX.1-dev, 28 steps)
 
@@ -374,13 +374,13 @@ RUN pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
 
 ### Pros / Cons
 
-✅ **Pros**:
+**Pros**:
 - Support natif RTX 5090 (sm_12.0)
 - cuDNN 9.10.2 optimisé pour Blackwell
 - PyTorch 2.8.0 avec dernières optimisations
 - SageAttention v2.2.0 support Blackwell
 
-❌ **Cons**:
+**Cons**:
 - Disponibilité limitée sur RunPod (nouveaux pods)
 - Image plus large (~14-16GB vs ~12-13GB pour 12.8)
 - Moins de pods compatibles
@@ -437,13 +437,13 @@ RUN pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
 
 ### Pros / Cons
 
-✅ **Pros**:
+**Pros**:
 - Large disponibilité sur RunPod
 - cuDNN inclus dans base image (plus simple)
 - Bien testé et stable
 - Support RTX 4090 optimal
 
-❌ **Cons**:
+**Cons**:
 - Pas de support RTX 5090 (Blackwell)
 - cuDNN 9.9.0 vs 9.10.2 (optimisations manquantes)
 - Triton 3.0.0 vs 3.1.0
@@ -481,12 +481,12 @@ RUN pip install --no-cache-dir torch==2.5.0 torchvision torchaudio \
 
 ### Pros / Cons
 
-✅ **Pros**:
+**Pros**:
 - Large disponibilité
 - Bien testé
 - Stable pour RTX 3000 series
 
-❌ **Cons**:
+**Cons**:
 - Pas de support RTX 5090
 - PyTorch 2.5.0 (manque features 2.8.0)
 - Ubuntu 22.04 (older packages)
@@ -522,10 +522,10 @@ Table complète des GPU disponibles sur RunPod avec VRAM et tarifs Secure Cloud 
 
 | Version | Commit | Release Date | sm_12.0 Support | sm_8.9 Support | Notes |
 |---------|--------|--------------|-----------------|----------------|-------|
-| **v2.2.0** | eb615cf | Oct 2025 | ✅ Yes | ✅ Yes | Blackwell optimization, bug fixes |
-| **v2.1.0** | ? | Sept 2025 | ❌ No | ✅ Yes | Ada optimization |
-| **v2.0.0** | ? | Aug 2025 | ❌ No | ✅ Yes | Major refactor |
-| **v1.x** | 68de379 | Jul 2025 | ❌ No | ⚠️ Limited | Early version |
+| **v2.2.0** | eb615cf | Oct 2025 | Yes | Yes | Blackwell optimization, bug fixes |
+| **v2.1.0** | ? | Sept 2025 | No | Yes | Ada optimization |
+| **v2.0.0** | ? | Aug 2025 | No | Yes | Major refactor |
+| **v1.x** | 68de379 | Jul 2025 | No | Limited | Early version |
 
 ---
 
@@ -566,19 +566,19 @@ docker build -t username/pod-comfyui-vscode:cuda129 .
 ## Recommandations par Use Case
 
 ### Je veux RTX 5090 performance maximale
-→ **CUDA 12.9.0** (current config)
+**CUDA 12.9.0** (current config)
 - PyTorch 2.8.0+cu129
 - SageAttention v2.2.0 avec sm_12.0
 - cuDNN 9.10.2 bundled
 
 ### Je veux large disponibilité RunPod (RTX 4090)
-→ **CUDA 12.8.1**
+**CUDA 12.8.1**
 - PyTorch 2.8.0+cu128
 - SageAttention v2.1.0 (à vérifier) avec sm_8.9
 - Plus de pods disponibles
 
 ### Je veux stabilité maximale (RTX 3090/4090)
-→ **CUDA 12.6.0**
+**CUDA 12.6.0**
 - PyTorch 2.5.0
 - Bien testé
 - Legacy support
@@ -605,11 +605,11 @@ cat /usr/local/cuda/version.json
 
 ## TODO / À compléter
 
-- [ ] Vérifier SageAttention support pour CUDA 12.8.1
-- [ ] Tester build CUDA 12.8.1 sur RTX 4090
-- [ ] Ajouter support multi-architecture (sm_8.9 + sm_12.0 dans même image)
-- [ ] Créer branches Git par version CUDA
-- [ ] Automatiser build matrix (GitHub Actions)
+[ ] Vérifier SageAttention support pour CUDA 12.8.1
+[ ] Tester build CUDA 12.8.1 sur RTX 4090
+[ ] Ajouter support multi-architecture (sm_8.9 + sm_12.0 dans même image)
+[ ] Créer branches Git par version CUDA
+[ ] Automatiser build matrix (GitHub Actions)
 
 ---
 
