@@ -204,13 +204,47 @@ Attack the two halves separately:
 | `PREWARM_SET` — first-load I/O | `FAST_MODE=cublas_ops` |
 | `ASYNC_OFFLOAD_STREAMS=4` — ~40 GB crosses PCIe per run | `FAST_MODE=autotune` |
 
-Change **one** at a time, against a fixed prompt *and* seed, and read
-`Prompt executed in Ns` from the log. Two runs of different resolution or
-duration are not comparable — 0.85 s and 2.57 s per step were both measured on
-this same pod, and the difference was the workflow, not the tuning.
+Which half dominates depends entirely on the workflow. Two runs on this pod,
+identical models and step count, differed 3× per step — so on a light workflow
+overhead was 29% of the total, and on a heavy one about 11%. Tune the half that
+is actually large for *your* workflow.
 
 `--fast` features are labelled untested and potentially quality-deteriorating
 upstream. Judge the output, not only the clock.
+
+### Benchmarking properly
+
+Eyeballing two generations proves nothing: per-step time on this pod has been
+measured at 0.85 s, 2.57 s and 8.07 s, a 9.5× spread driven purely by workflow
+settings. [`scripts/bench.py`](scripts/bench.py) removes that variance.
+
+```bash
+# in the pod, from the VSCode terminal
+python /app/scripts/bench.py my_workflow_api.json --reps 3
+python /app/scripts/bench.py my_workflow_api.json --config fp16 --config lru
+python /app/scripts/bench.py --list          # available configurations
+```
+
+Export the workflow with **Export (API)** — the plain save format is rejected
+by `/prompt`, and the script says so rather than failing obscurely.
+
+What it does, and why:
+
+- **Spawns its own ComfyUI** per configuration on port 3111. The levers are CLI
+  arguments, so comparing them requires a restart, and `start.sh`'s watchdog
+  would restart the pod's instance with its original arguments.
+- **Pins every seed widget**, so runs are actually comparable.
+- **Times from ComfyUI's own history** (`execution_start` → `execution_success`),
+  not wall-clock around the HTTP call, keeping queue and network out of it.
+- **Discards the first run** of each configuration — it pays model staging and
+  any cold Triton kernels.
+- **Disables custom nodes and previews**, so third-party code and preview
+  encoding stay out of the numbers.
+- **Reports spread alongside the median.** If spread exceeds the difference
+  between two configurations, you measured noise.
+
+Each configuration reloads the models, so a full sweep is slow. Start with
+`--config fp16 --config lru` rather than all nine.
 | `VRAM_HEADROOM` | — | Extra GB kept free; raise on OOM mid-sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Appended verbatim to the ComfyUI command line |
 

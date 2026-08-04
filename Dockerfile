@@ -159,6 +159,7 @@ RUN mkdir -p /app/comfyui/models/upscale_models \
 
 COPY models/manifest.json /app/models/manifest.json
 COPY scripts/download_models.py /app/scripts/download_models.py
+COPY scripts/bench.py /app/scripts/bench.py
 COPY init.sh start.sh fetch_models.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
 COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.json
