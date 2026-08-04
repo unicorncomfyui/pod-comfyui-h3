@@ -1,0 +1,78 @@
+name: Validate
+
+# Cheap gate that runs in ~30s. A Docker build for this image takes ~20 min,
+# so catching a shell typo or a broken manifest here saves real time.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a token committed then reverted still leaks.
+          fetch-depth: 0
+      - name: Scan for committed credentials
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          # DL3008/DL3013: pinning every apt and pip version is not workable
+          # here, the CUDA/torch versions are already pinned via build args.
+          ignore: DL3008,DL3013,DL3015
+          failure-threshold: error
+
+      - name: Lint shell scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck --severity=error init.sh start.sh
+
+      - name: Check model manifest
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          manifest = json.loads(pathlib.Path("models/manifest.json").read_text())
+          allowed_dest = {
+              "diffusion_models", "text_encoders", "vae",
+              "loras", "upscale_models", "checkpoints",
+          }
+          errors = []
+
+          for name, spec in manifest["sets"].items():
+              if not spec.get("files"):
+                  errors.append(f"{name}: no files")
+              for f in spec.get("files", []):
+                  for key in ("repo", "path", "dest", "size_gb"):
+                      if key not in f:
+                          errors.append(f"{name}: entry missing '{key}'")
+                  if f.get("dest") not in allowed_dest:
+                      errors.append(f"{name}: unknown dest '{f.get('dest')}'")
+              total = sum(f.get("size_gb", 0) for f in spec.get("files", []))
+              print(f"  {name}: {len(spec.get('files', []))} files, {total:.1f} GB")
+
+          if errors:
+              print("\n".join(f"[ERROR] {e}" for e in errors))
+              sys.exit(1)
+          print("Manifest OK")
+          PY
+
+      - name: Compile Python scripts
+        run: python -m py_compile scripts/download_models.py
+
+      - name: Validate compose file
+        run: docker compose -f docker-compose.yml config --quiet

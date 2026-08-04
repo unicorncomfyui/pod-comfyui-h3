@@ -1,88 +1,116 @@
 #!/bin/bash
-# Initialization script for RunPod ComfyUI Pod with VSCode
-# Handles SageAttention compilation with network volume caching
+# Initialization for the MiniMax H3 ComfyUI pod.
+# Runs diagnostics, validates the H3 runtime stack, then fetches model weights.
+# Expects COMFYUI_DIR to be exported by start.sh.
 
 set -e
 
-echo "Starting initialization..."
-
-# System diagnostics
 echo ""
 echo "=========================================="
 echo "SYSTEM DIAGNOSTICS"
 echo "=========================================="
 
-# GPU Information
 echo ""
-echo "--- GPU Information ---"
+echo "--- Image build parameters ---"
+echo "PyTorch:  ${BUILD_TORCH_VERSION:-?} (${BUILD_TORCH_INDEX:-?})"
+echo "ComfyUI:  ${BUILD_COMFYUI_VERSION:-?}"
+echo "Python:   ${BUILD_PYTHON_VERSION:-?}"
+
+echo ""
+echo "--- GPU ---"
 if command -v nvidia-smi &> /dev/null; then
-    nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv,noheader || echo "[ERROR] nvidia-smi query failed"
-    echo ""
-    echo "CUDA Driver Version:"
-    nvidia-smi | grep "CUDA Version" || echo "[ERROR] Could not detect CUDA driver version"
+    nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap \
+        --format=csv,noheader || echo "[ERROR] nvidia-smi query failed"
+
+    # MiniMax H3 ships its text encoder in NVFP4, which needs Blackwell
+    # tensor cores. Anything below sm_120 falls back to a much slower path.
+    COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' ')
+    if [ "$COMPUTE_CAP" != "12.0" ]; then
+        echo "[WARN] Compute capability is $COMPUTE_CAP, not 12.0 (Blackwell)."
+        echo "       The NVFP4 text encoder will run on an emulated path."
+        echo "       This image targets the RTX 5090."
+    fi
+
+    # cu130 builds need a 580+ host driver; RunPod still has 575 machines.
+    DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | cut -d. -f1)
+    if [ "${BUILD_TORCH_INDEX}" = "cu130" ] && [ "${DRIVER_MAJOR:-0}" -lt 580 ]; then
+        echo "[ERROR] Host driver is ${DRIVER_MAJOR}.x but this is a CUDA 13 image (needs 580+)."
+        echo "        Redeploy on a CUDA 13 machine, or use the :cu129-* image tag."
+    fi
 else
     echo "[ERROR] nvidia-smi not found"
 fi
 
-# CPU Information
 echo ""
-echo "--- CPU Information ---"
-lscpu | grep -E "Model name|CPU\(s\)|Thread|Core" || echo "[ERROR] Could not get CPU info"
+echo "--- CPU / RAM ---"
+lscpu | grep -E "^Model name|^CPU\(s\)" || true
+free -h | grep -E "Mem:|Swap:" || true
 
-# Memory Information
-echo ""
-echo "--- Memory Information ---"
-free -h | grep -E "Mem:|Swap:" || echo "[ERROR] Could not get memory info"
+# Host RAM, not VRAM, is the bottleneck on a 32 GB card: the offloader streams
+# weights through it. Only one diffusion model is resident per workflow, so the
+# figure that matters is ~42.5 GB (one diffusion model + text encoder + both
+# VAEs), not the 63.4 GB total that a full fl2va+ref2va install occupies on disk.
+RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+if [ "${RAM_GB:-0}" -lt 48 ]; then
+    echo "[WARN] Only ${RAM_GB} GB of host RAM detected."
+    echo "       A single H3 workflow needs ~42.5 GB resident. Below 48 GB expect"
+    echo "       heavy swapping or OOM. Consider FAST_DISK=true to trade speed"
+    echo "       for survival, or move to a larger pod."
+elif [ "${RAM_GB:-0}" -lt 80 ]; then
+    echo "[INFO] ${RAM_GB} GB of host RAM - workable but with little margin."
+    echo "       If you hit host-memory exhaustion, try COMFYUI_EXTRA_ARGS=--disable-pinned-memory"
+else
+    echo "[OK]   ${RAM_GB} GB of host RAM - comfortable for H3."
+fi
 
-# Disk Space
+if [ "${FAST_DISK:-false}" = "true" ] && [ "${RAM_GB:-0}" -ge 80 ]; then
+    echo "[WARN] FAST_DISK=true with ${RAM_GB} GB of RAM is likely a pessimisation:"
+    echo "       the weights fit in RAM, and on RunPod they sit on a network"
+    echo "       volume rather than local NVMe. Consider FAST_DISK=false."
+fi
+
 echo ""
-echo "--- Disk Space ---"
+echo "--- Disk ---"
 df -h / /workspace 2>/dev/null || df -h /
 
-# Environment Variables
 echo ""
-echo "--- NVIDIA Environment Variables ---"
-env | grep -E "CUDA|NVIDIA" | sort || echo "No NVIDIA environment variables found"
-
-# PyTorch & CUDA Information
-echo ""
-echo "--- PyTorch & CUDA Information ---"
-python -c "
+echo "--- PyTorch / CUDA ---"
+python - <<'PY' || echo "[ERROR] Python diagnostics failed"
 import sys
-print(f'Python version: {sys.version.split()[0]}')
-
+print(f"Python: {sys.version.split()[0]}")
 try:
     import torch
-    print(f'PyTorch version: {torch.__version__}')
-    print(f'CUDA available: {torch.cuda.is_available()}')
+    print(f"torch:  {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        print(f'CUDA version (PyTorch): {torch.version.cuda}')
-        print(f'cuDNN version: {torch.backends.cudnn.version()}')
-        print(f'GPU count: {torch.cuda.device_count()}')
+        print(f"CUDA (torch): {torch.version.cuda}")
+        print(f"cuDNN: {torch.backends.cudnn.version()}")
         for i in range(torch.cuda.device_count()):
-            print(f'GPU {i}: {torch.cuda.get_device_name(i)}')
-            props = torch.cuda.get_device_properties(i)
-            print(f'  Compute capability: {props.major}.{props.minor}')
-            print(f'  Total memory: {props.total_memory / 1024**3:.2f} GB')
+            p = torch.cuda.get_device_properties(i)
+            print(f"GPU {i}: {p.name} | sm_{p.major}{p.minor} | {p.total_memory/1024**3:.1f} GB")
     else:
-        print('[ERROR] CUDA is not available to PyTorch')
         import os
-        print(f'LD_LIBRARY_PATH: {os.environ.get(\"LD_LIBRARY_PATH\", \"Not set\")}')
-        print(f'CUDA_HOME: {os.environ.get(\"CUDA_HOME\", \"Not set\")}')
+        print("[ERROR] CUDA is not available to PyTorch")
+        print(f"LD_LIBRARY_PATH: {os.environ.get('LD_LIBRARY_PATH', 'unset')}")
 except Exception as e:
-    print(f'[ERROR] PyTorch check failed: {e}')
-" || echo "[ERROR] Python diagnostics failed"
+    print(f"[ERROR] torch check failed: {e}")
+PY
 
-# CUDA Toolkit Version
 echo ""
-echo "--- CUDA Toolkit Version ---"
-if [ -f "/usr/local/cuda/version.json" ]; then
-    cat /usr/local/cuda/version.json | grep -E "cuda_version|name" || echo "/usr/local/cuda/version.json found but could not parse"
-elif command -v nvcc &> /dev/null; then
-    nvcc --version | grep "release" || echo "nvcc found but could not get version"
-else
-    echo "CUDA toolkit not found in standard locations"
-fi
+echo "--- MiniMax H3 runtime stack ---"
+# These two packages are what make H3 fit on a 32 GB card. Without them the
+# model loads but either fails on int8-convrot weights or OOMs immediately.
+python - <<'PY' || true
+for mod, label in (
+    ("comfy_kitchen", "comfy-kitchen (NVFP4 / int8-convrot kernels)"),
+    ("comfy_aimdo", "comfy-aimdo (dynamic VRAM offloader)"),
+):
+    try:
+        m = __import__(mod)
+        print(f"[OK]   {label}: {getattr(m, '__version__', 'installed')}")
+    except ImportError as e:
+        print(f"[ERROR] {label} missing - H3 will not run correctly ({e})")
+PY
 
 echo ""
 echo "=========================================="
@@ -90,80 +118,65 @@ echo "END DIAGNOSTICS"
 echo "=========================================="
 echo ""
 
-# Verify SageAttention installation (pre-compiled in Docker image)
-echo "--- SageAttention Verification ---"
-if python -c "import sageattention; print(f'✅ SageAttention installed: {sageattention.__version__ if hasattr(sageattention, \"__version__\") else \"v2.2.0 (eb615cf)\"}')"; then
-    echo "[OK] SageAttention ready (pre-compiled in image)"
+# ---------------------------------------------------------------------------
+# Model weights
+# ---------------------------------------------------------------------------
+if [ "${DOWNLOAD_MODELS:-true}" != "true" ]; then
+    echo "[SKIP] Model download disabled (DOWNLOAD_MODELS=false)"
+elif [ -z "${COMFYUI_DIR}" ]; then
+    echo "[SKIP] COMFYUI_DIR not set - skipping model download"
+elif [ "${NETWORK_VOLUME}" != "true" ]; then
+    # 63 GB of weights will not fit in container storage.
+    echo "[SKIP] No network volume detected - skipping model download."
+    echo "       MiniMax H3 needs up to 63 GB; attach a network volume."
 else
-    echo "[WARN] SageAttention not found - image may need rebuild"
+    echo "Fetching model weights (MODEL_SETS=${MODEL_SETS:-default})..."
+    python /app/scripts/download_models.py || echo "[WARN] Model download reported errors"
 fi
-echo ""
 
-# Z-Image-Turbo model checking and downloading
-if [ "${CHECK_MODELS:-true}" = "true" ]; then
-    echo "Checking Z-Image-Turbo models..."
+# ---------------------------------------------------------------------------
+# Optional page-cache warm-up.
+#
+# On a RunPod network volume, reads are network-bound and RunPod rates their
+# throughput as "variable". Left alone, those 42 GB stream in during the first
+# generation, as unpredictable stalls mid-sampling. Reading them once up front
+# moves that cost to boot, where it is visible in the log, and subsequent
+# faults are served from RAM.
+#
+# Name ONE set: prewarming more than fits in RAM just evicts itself.
+# ---------------------------------------------------------------------------
+if [ -n "${PREWARM_SET}" ] && [ -n "${COMFYUI_DIR}" ]; then
+    echo ""
+    echo "Warming page cache for '${PREWARM_SET}'..."
+    PREWARM_LIST=$(mktemp)
+    python /app/scripts/download_models.py --list "${PREWARM_SET}" > "$PREWARM_LIST" 2>/dev/null || true
 
-    # ONLY download models if network volume is available
-    # Container storage doesn't have enough space (~10GB needed)
-    if [ -d "/workspace/ComfyUI" ]; then
-        COMFYUI_DIR="/workspace/ComfyUI"
-        echo "Network volume detected - using $COMFYUI_DIR for models"
+    if [ ! -s "$PREWARM_LIST" ]; then
+        echo "[WARN] Nothing to prewarm - set unknown, or its files are not downloaded yet"
     else
-        echo "[SKIP] No network volume detected - skipping model downloads (container has insufficient storage)"
-        echo "       Models will need to be provided manually or use network volume"
-        COMFYUI_DIR=""
-    fi
+        # Read line-by-line rather than word-splitting, so a path containing a
+        # space cannot silently turn into two bogus paths.
+        PREWARM_BYTES=0
+        while IFS= read -r f; do
+            SZ=$(stat -c %s "$f" 2>/dev/null || echo 0)
+            PREWARM_BYTES=$(( PREWARM_BYTES + SZ ))
+        done < "$PREWARM_LIST"
+        PREWARM_GB=$(( PREWARM_BYTES / 1000000000 ))
 
-    if [ -n "$COMFYUI_DIR" ]; then
-        # Define model paths
-        DIFFUSION_MODEL="$COMFYUI_DIR/models/diffusion_models/z_image_turbo_bf16.safetensors"
-        TEXT_ENCODER="$COMFYUI_DIR/models/clip/qwen_3_4b.safetensors"
-        VAE_MODEL="$COMFYUI_DIR/models/vae/ae.safetensors"
-
-        MODELS_MISSING=false
-
-        # Check diffusion model
-        if [ ! -f "$DIFFUSION_MODEL" ]; then
-            echo "Downloading Z-Image-Turbo diffusion model (3GB)..."
-            mkdir -p "$COMFYUI_DIR/models/diffusion_models"
-            wget --progress=bar:force:noscroll -O "$DIFFUSION_MODEL" \
-                "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors" \
-                || { echo "[ERROR] Failed to download diffusion model"; MODELS_MISSING=true; }
+        AVAIL_GB=$(free -g | awk '/^Mem:/{print $7}')   # "available", not "free"
+        if [ "${AVAIL_GB:-0}" -lt "$PREWARM_GB" ]; then
+            echo "[SKIP] Needs ${PREWARM_GB} GB but only ${AVAIL_GB} GB available - would thrash"
         else
-            echo "[OK] Diffusion model found: z_image_turbo_bf16.safetensors"
-        fi
-
-        # Check text encoder
-        if [ ! -f "$TEXT_ENCODER" ]; then
-            echo "Downloading Z-Image-Turbo text encoder (7GB)..."
-            mkdir -p "$COMFYUI_DIR/models/clip"
-            wget --progress=bar:force:noscroll -O "$TEXT_ENCODER" \
-                "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors" \
-                || { echo "[ERROR] Failed to download text encoder"; MODELS_MISSING=true; }
-        else
-            echo "[OK] Text encoder found: qwen_3_4b.safetensors"
-        fi
-
-        # Check VAE
-        if [ ! -f "$VAE_MODEL" ]; then
-            echo "Downloading Z-Image-Turbo VAE (200MB)..."
-            mkdir -p "$COMFYUI_DIR/models/vae"
-            wget --progress=bar:force:noscroll -O "$VAE_MODEL" \
-                "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors" \
-                || { echo "[ERROR] Failed to download VAE"; MODELS_MISSING=true; }
-        else
-            echo "[OK] VAE found: ae.safetensors"
-        fi
-
-        if [ "$MODELS_MISSING" = "false" ]; then
-            echo "[OK] All Z-Image-Turbo models are available"
-        else
-            echo "[WARN] Some models failed to download, but continuing..."
+            START=$(date +%s)
+            while IFS= read -r f; do
+                cat "$f" > /dev/null 2>&1 || true
+            done < "$PREWARM_LIST"
+            echo "[OK]   ${PREWARM_GB} GB cached in $(( $(date +%s) - START ))s"
         fi
     fi
-else
-    echo "[SKIP] Model checking disabled (CHECK_MODELS=false)"
+    rm -f "$PREWARM_LIST"
 fi
 
-echo "[OK] Initialization completed successfully"
+echo ""
+echo "[OK] Initialization completed"
 exit 0

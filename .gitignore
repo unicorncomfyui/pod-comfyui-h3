@@ -32,8 +32,10 @@ env/
 *.swo
 *~
 
-# Models (too large for git)
-models/
+# Model weights are too large for git - but models/manifest.json is the
+# catalogue that drives downloads and must be tracked.
+models/*
+!models/manifest.json
 *.safetensors
 *.ckpt
 *.pth

@@ -1,0 +1,156 @@
+name: Build and Push Docker Image
+
+# Builds the CUDA matrix from a single parameterised Dockerfile.
+# Adding a target = adding one entry to the matrix below.
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Which CUDA targets to build'
+        type: choice
+        default: all
+        options: [all, cu130, cu129]
+
+env:
+  IMAGE_NAME: vlop12ui/pod-comfyui-h3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Primary target. Full NVFP4 tensor-core path, needs a host driver
+          # 580+ (RunPod exposes machines up to CUDA 13.3).
+          - target: cu130
+            cuda_base: 13.3.1-cudnn-runtime-ubuntu24.04
+            torch_index: cu130
+            primary: true
+          # Safety net for the large part of the RunPod fleet still on 12.x
+          # drivers. Same torch version, older CUDA runtime.
+          - target: cu129
+            cuda_base: 12.9.2-cudnn-runtime-ubuntu24.04
+            torch_index: cu129
+            primary: false
+
+    steps:
+      - name: Skip target if not selected
+        id: gate
+        run: |
+          SEL="${{ github.event.inputs.targets }}"
+          if [ -z "$SEL" ] || [ "$SEL" = "all" ] || [ "$SEL" = "${{ matrix.target }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Target ${{ matrix.target }} not selected, skipping."
+          fi
+
+      # The runner ships with ~14 GB free; this image needs far more during
+      # build. Clearing the preinstalled toolchains buys back ~25 GB.
+      - name: Free up disk space
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          echo "Before:"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/share/swift \
+                      /usr/local/.ghcup /usr/local/share/boost \
+                      /usr/local/graalvm /usr/local/share/chromium \
+                      /usr/local/share/powershell
+          sudo apt-get clean
+          sudo docker system prune --all --force --volumes
+          echo "After:"; df -h /
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: steps.gate.outputs.run == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        # Pull requests build but never publish.
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        if: steps.gate.outputs.run == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # Every tag carries the CUDA target, so cu130 and cu129 images can
+          # never overwrite each other. Only cu130 claims the bare aliases.
+          tags: |
+            type=raw,value=${{ matrix.target }}
+            type=raw,value=${{ matrix.target }}-{{branch}}
+            type=raw,value=${{ matrix.target }}-{{branch}}-{{sha}}
+            type=raw,value=${{ matrix.target }}-{{date 'YYYYMMDD'}}-{{sha}}
+            type=raw,value=latest,enable=${{ matrix.primary && github.ref == 'refs/heads/main' }}
+            type=semver,pattern=${{ matrix.target }}-{{version}}
+
+      - name: Build and push
+        if: steps.gate.outputs.run == 'true'
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          build-args: |
+            CUDA_BASE=${{ matrix.cuda_base }}
+            TORCH_INDEX=${{ matrix.torch_index }}
+          # Scoped per target, otherwise the two matrix legs evict each other.
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+      - name: Summary
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          {
+            echo "## ${{ matrix.target }} 🐳"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Base | \`nvidia/cuda:${{ matrix.cuda_base }}\` |"
+            echo "| PyTorch index | \`${{ matrix.torch_index }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trivy vulnerability scan
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ matrix.target }}
+          format: sarif
+          output: trivy-${{ matrix.target }}.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy results
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.target }}.sarif
+          category: trivy-${{ matrix.target }}

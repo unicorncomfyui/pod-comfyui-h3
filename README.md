@@ -1,244 +1,238 @@
-# RunPod ComfyUI Pod - RTX 5090 Series
+# RunPod ComfyUI Pod — MiniMax H3 / RTX 5090
 
 **English** | **[Français](README.fr.md)**
 
-![RunPod ComfyUI RTX5000](https://img.shields.io/badge/RunPod-Pod-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.9-green) ![cuDNN](https://img.shields.io/badge/cuDNN-9.10.2-orange) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![PyTorch](https://img.shields.io/badge/PyTorch-2.8.0+cu129-red) ![ComfyUI](https://img.shields.io/badge/ComfyUI-36357bb-purple)
+![CUDA](https://img.shields.io/badge/CUDA-13.3%20%7C%2012.9-green) ![PyTorch](https://img.shields.io/badge/PyTorch-2.13.0-red) ![Python](https://img.shields.io/badge/Python-3.13-blue) ![ComfyUI](https://img.shields.io/badge/ComfyUI-v0.30.0-purple) ![Model](https://img.shields.io/badge/MiniMax-H3-orange)
 
-Persistent RunPod Pod with **ComfyUI** + **VSCode (code-server)** optimized for **RTX 5090** (Blackwell architecture).
+Persistent RunPod Pod running **ComfyUI** + **VSCode (code-server)**, built around
+**MiniMax H3** video generation on the **RTX 5090** (Blackwell, sm_120).
 
-## Why This Pod?
+MiniMax H3 generates up to **2K, 24 fps, 4–15 s clips with native stereo audio**
+(dialogue, effects and room tone produced in the same pass) from text, images,
+video or audio references.
 
-**Ready to go** - No dependency on public pods, your own persistent environment
+## What makes this pod work
 
-**VSCode web interface** - Full IDE in your browser with terminal access
+H3's usable weights total **42.5 GB** (T2V/I2V) to **63.4 GB** (with R2V) against
+32 GB of VRAM. Three things close that gap, all of them new since ComfyUI 0.27–0.30:
 
-**Z-Image-Turbo ready** - 6B parameter photorealistic image generation (auto-download)
+| Piece | Role |
+|---|---|
+| **comfy-aimdo** | Dynamic VRAM allocator. Faults model weights in on demand and offloads them under pressure. Enabled by default on NVIDIA. |
+| **comfy-kitchen** | ComfyUI's kernel library: NVFP4, int8-convrot, AWQ w4a16, fused RoPE/AdaLN. |
+| **Pruned int8-convrot weights** | ~40% of parameters (modulation) replaced by a lookup table, the rest quantised to int8. |
 
-**SageAttention pre-compiled** - Instant startup (0s) - compiled in image
+The text encoder ships in **NVFP4**, which needs Blackwell tensor cores — hence
+the RTX 5090 target rather than a cheaper card.
 
-**Performance optimized** - CUDA 12.9.0, tcmalloc, PyTorch 2.8.0+cu129 for RTX 5090 (Blackwell)
+Both packages ship as **prebuilt wheels**, so this image compiles nothing.
+SageAttention, which the previous generation of this pod built from source, is
+gone: its upstream has been idle since January 2026 and H3's int8 layers are not
+FP16/BF16 anyway.
 
-**Network Volume support** - Persistent models, cache, and custom nodes
+## Quick start
 
-## Quick Start
+### 1. Deploy on RunPod
 
-### 1. Pull Pre-built Image
+Target pod profile — the defaults in this repo are tuned for it:
 
-```bash
-docker pull <username>/pod-comfyui-vscode:latest
-```
+| | |
+|---|---|
+| GPU | RTX 5090, 32 GB VRAM |
+| Host RAM | **92 GB** |
+| vCPU | 16 |
+| Price | $0.99/hr |
 
-### 2. Deploy on RunPod
+92 GB of RAM is the number that matters: a single H3 workflow needs ~42.5 GB
+resident, so it fits outright with margin to spare. This is why `FAST_DISK`
+defaults to `false` (see [Host RAM](#host-ram-is-the-real-constraint)).
 
-**[Deploy with one click](https://console.runpod.io/deploy?template=2kd0a6oy1x&ref=0f4gc2hq)**
+1. GPU: **RTX 5090** (32 GB VRAM / 92 GB RAM / 16 vCPU)
+2. Container disk: 30 GB
+3. **100 GB of persistent storage at `/workspace`** — the weights live there,
+   not in the image. See the trade-off below.
+4. Image: `vlop12ui/pod-comfyui-h3:latest`
+5. Under *Additional filters → CUDA Versions*, select **13.0+**
 
-1. Select **RTX 5090** as GPU
-2. Set **Container Disk** to 30GB OR attach a Network Volume for persistent storage
-3. Click **Deploy**
+#### Volume disk or network volume?
 
-### 3. Access Your Pod
+Both mount at `/workspace` and this image works with either. RunPod rates volume
+disk as *fast (local)* and network volume as *variable (network)*:
 
-Once deployed, RunPod will provide URLs:
+| | Volume disk | Network volume |
+|---|---|---|
+| Speed | Local — faster weight loading | Network — variable |
+| Persistence | Until the pod is **deleted** | Independent of any pod |
+| Shareable across pods | No | Yes |
+| Re-download 63 GB on pod deletion | Yes | No |
 
-- **VSCode**: `https://your-pod-id-8080.proxy.runpod.net`
-- **ComfyUI**: `https://your-pod-id-3000.proxy.runpod.net`
+Pick **volume disk** for a single long-lived pod: loading 42 GB of weights each
+generation session is I/O-bound and local storage wins. Pick **network volume**
+if you spin pods up and down, or run several against the same weights.
 
-No authentication required - RunPod handles security.
+On a **network volume**, set `PREWARM_SET=minimax-h3-fl2va`. Reads are
+network-bound there, so those 42 GB would otherwise stream in as unpredictable
+stalls during the first generation; prewarming turns that into a one-off,
+visible cost at boot. Name a single set — prewarming more than fits in RAM just
+evicts itself, and `init.sh` skips the step if RAM is short.
+
+`FAST_DISK=true` only ever makes sense on a volume disk, and even then only if
+host RAM is short.
+
+**Sizing**: 63.45 GB for both H3 variants leaves ~36 GB on a 100 GB volume for
+outputs and inputs. Go to 150 GB if you generate heavily or keep raw footage.
+
+> If no CUDA 13 machine is available, use `:cu129` instead. It is the same
+> PyTorch on an older CUDA runtime and runs on 12.9 hosts.
+
+### 2. Access
+
+- **ComfyUI**: `https://<pod-id>-3000.proxy.runpod.net`
+- **VSCode**: `https://<pod-id>-8080.proxy.runpod.net`
+
+First boot downloads 42–63 GB of weights. Watch the pod log; ComfyUI is up
+before the download finishes, but H3 will not appear in the loaders until it
+completes.
+
+### 3. Generate
+
+ComfyUI 0.30 ships the H3 templates: *Template Library → MiniMax H3 T2V / I2V / R2V*.
+
+## Image tags
+
+Every tag carries its CUDA target, so the two build legs can never overwrite
+each other.
+
+| Tag | Meaning |
+|---|---|
+| `latest` | Newest `cu130` build from `main` |
+| `cu130` / `cu129` | Newest build of that target |
+| `cu130-main`, `cu129-develop` | Newest build of a target on a branch |
+| `cu130-main-<sha>` | Exact commit — use this for reproducibility |
+| `cu130-<date>-<sha>` | Chronologically sortable |
 
 ## Stack
 
-| Component | Version | Purpose |
-|-----------|---------|---------|
-| **CUDA** | 12.9.0 | GPU runtime |
-| **cuDNN** | 9.10.2 | Bundled in PyTorch (optimized for Blackwell) |
-| **Python** | 3.11 | Latest stable |
-| **PyTorch** | 2.8.0+cu129 | RTX 5090 series support (sm_12.0 Blackwell) |
-| **NVIDIA Driver** | 565+ | Required for CUDA 12.9 compatibility |
-| **ComfyUI** | Commit 36357bb | Stable version |
-| **SageAttention** | v2.2.0 (eb615cf) | INT8/FP16 quantized attention (sm_12.0 optimized) |
-| **Z-Image-Turbo** | Latest | Text-to-image generation (auto-download) |
-| **UltraSharp** | 4x upscaler | ESRGAN upscaler (67MB, included) |
-| **code-server** | 4.96.2 | VSCode in browser |
-| **tcmalloc** | Latest | Memory optimization |
+| Component | Version | Note |
+|---|---|---|
+| Base image | `nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04` | `-runtime`, not `-devel`: nothing is compiled |
+| PyTorch | 2.13.0+cu130 | ComfyUI's recommended stable index |
+| Python | 3.13 | in a venv at `/opt/venv` |
+| ComfyUI | v0.30.0 | from `Comfy-Org/ComfyUI` (the repo moved orgs) |
+| comfy-kitchen | pinned by ComfyUI | NVFP4 / int8-convrot kernels |
+| comfy-aimdo | pinned by ComfyUI | dynamic VRAM offloader |
+| code-server | 4.131.0 | VSCode in the browser |
+| Driver required | 580+ (cu130), 575+ (cu129) | provided by the RunPod host |
 
-## Features
+Custom nodes are limited to a video-oriented set: ComfyUI-Manager,
+VideoHelperSuite, KJNodes, rgthree, Frame-Interpolation, cg-use-everywhere.
+The image-era suites (WAS, Impact Pack, Comfyroll, RES4LYF…) were dropped — they
+are heavy and break on core version bumps. Easy-Use was dropped for a specific
+reason: it depends on `clip_interrogator` 0.6.0, last released in March 2023,
+which is not a safe bet against transformers 5.x.
 
-### ComfyUI Optimizations
+## Volume layout
 
-- **SageAttention pre-compiled**: Instant startup (0s) - compiled directly in Docker image
-- **WAN 2.2 ready**: Text-to-video and image-to-video workflows
-- **Z-Image-Turbo auto-download**: Automatic model download to network volume (diffusion model, text encoder, VAE)
-- **UltraSharp 4x upscaler**: Pre-installed ESRGAN upscaler (67MB)
-- **Example workflows**: Z-Image-Turbo with upscaling demonstration
-- **tcmalloc enabled**: Efficient memory management
-- **Network Volume support**: Persistent models and cache
-- **Auto-initialization**: ComfyUI automatically copied to network volume on first run
-
-### Development Environment
-
-- **VSCode in browser**: Full IDE with terminal
-- **No authentication**: Secured by RunPod proxy
-- **Access to /workspace**: Edit custom nodes, workflows, scripts
-- **Python 3.11 + PyTorch**: Ready for development
-- **Clean logging**: Clean output with [OK]/[ERROR]/[WARN] tags
-
-### System Diagnostics
-
-- **Automatic diagnostics on startup**: GPU info (name, driver, VRAM, compute capability), CUDA driver version, CPU/RAM/Disk space
-- **PyTorch CUDA check**: Verifies GPU accessibility and compatibility at pod initialization
-- **Environment inspection**: All NVIDIA/CUDA environment variables displayed
-- **CUDA toolkit version**: Container CUDA version verification
-- **Troubleshooting ready**: Complete system info for debugging compatibility issues
-
-## Network Volume Structure
+ComfyUI itself stays **in the image** and is never copied to the volume. Only
+mutable data persists. Updating ComfyUI is therefore just pulling a newer tag,
+rather than being permanently shadowed by a stale copy on the volume — which is
+what the previous pod design did.
 
 ```
-/workspace/  (mounted from /runpod-volume)
-├── ComfyUI/                    # ComfyUI installation
-│   ├── models/
-│   │   ├── checkpoints/        # Your models (.safetensors)
-│   │   ├── diffusion_models/   # Z-Image-Turbo diffusion model (auto-downloaded)
-│   │   ├── clip/               # Text encoders (Qwen, auto-downloaded)
-│   │   ├── vae/                # VAE models (auto-downloaded)
-│   │   ├── unet/               # UNet models
-│   │   ├── loras/              # LoRA models
-│   │   └── upscale_models/     # UltraSharp 4x (pre-installed)
-│   ├── custom_nodes/           # 16 custom nodes installed
-│   ├── output/                 # Generated images/videos
-│   ├── input/                  # Source images
-│   └── user/default/workflows/ # Example Z-Image-Turbo workflow
-├── sageattention_cache/        # SageAttention compiled cache
-│   ├── SageAttention/
-│   └── .commit_hash
-└── your-projects/              # Your dev projects
+/workspace/comfyui-data/
+├── models/
+│   ├── diffusion_models/   # minimax_h3_*_pruned_int8_convrot.safetensors
+│   ├── text_encoders/      # qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+│   ├── vae/                # video (fp16) + audio (fp32) VAEs
+│   └── loras/ upscale_models/ checkpoints/
+├── custom_nodes/           # your own nodes, survive image updates
+├── input/  output/  user/
+└── extra_model_paths.yaml  # regenerated on every boot
 ```
 
-## Performance
+## Configuration
 
-### Startup Times
+All behaviour is driven by environment variables — see [.env.example](.env.example).
+The ones that matter:
 
-- **With wheel cache** (Network Volume): ~5-10s (instant pip install)
-- **With source cache** (fallback): ~1-2min (CUDA extensions reinstall)
-- **Without cache** (first start): ~2-3min (full compilation)
-- **Cache validation**: Automatic via commit hash
+| Variable | Default | Purpose |
+|---|---|---|
+| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va` | Which sets from `models/manifest.json` to download |
+| `DOWNLOAD_MODELS` | `true` | Set `false` to boot without fetching weights |
+| `FAST_DISK` | `false` | Trade host RAM for disk when offloading — only worth it on a RAM-starved pod |
+| `PREWARM_SET` | — | Read one set into the page cache at boot. Recommended on a network volume |
+| `VRAM_HEADROOM` | — | Extra GB kept free; raise on OOM mid-sampling |
+| `COMFYUI_EXTRA_ARGS` | — | Appended verbatim to the ComfyUI command line |
 
-### Generation Times (RTX 5090)
+### Adding a model
 
-| Workflow | Resolution | Frames | Time |
-|----------|-----------|--------|------|
-| Z-Image-Turbo | 1024x1024 | 1 | ~2-4s |
-| Z-Image-Turbo | 1080x1920 | 1 | ~3-5s |
-| WAN 2.2 t2v | 720p | 61 | ~50-55s |
+Add an entry to [models/manifest.json](models/manifest.json) and reference it in
+`MODEL_SETS`. No change to `init.sh` or the `Dockerfile`:
 
-## Usage
-
-### Accessing Services
-
-1. **VSCode**: Click the `8080` port link in RunPod dashboard
-   - Edit custom nodes in `/workspace/ComfyUI/custom_nodes/`
-   - Create workflows
-   - Python development
-
-2. **ComfyUI**: Click the `3000` port link in RunPod dashboard
-   - Load workflows
-   - Generate images/videos
-   - Test custom nodes
-
-### Adding Custom Nodes
-
-Via VSCode terminal:
-
-```bash
-cd /workspace/ComfyUI/custom_nodes
-git clone https://github.com/your-custom-node.git
-cd your-custom-node
-pip install -r requirements.txt
+```json
+"my-model": {
+  "description": "...",
+  "default": false,
+  "files": [
+    { "repo": "org/repo", "path": "diffusion_models/x.safetensors",
+      "dest": "diffusion_models", "size_gb": 12.3 }
+  ]
+}
 ```
 
-Then restart ComfyUI (stop/start pod).
+Sets may overlap — shared files are downloaded once. The downloader skips files
+already present, so re-running on an existing volume is cheap.
 
-### Adding Models
+## Host RAM is the real constraint
 
-Upload via VSCode file explorer or terminal:
+On a 32 GB card the bottleneck is **system RAM**, not VRAM: the offloader streams
+weights through it.
 
-```bash
-# In /workspace/ComfyUI/models/checkpoints/
-# Upload your .safetensors files
-```
+The figure that matters is **~42.5 GB** — one diffusion model plus the text
+encoder and both VAEs. Not the 63.4 GB a full `fl2va` + `ref2va` install
+occupies on disk: `fl2va` and `ref2va` are alternatives, never resident together.
 
-## Local Development
+| Host RAM | Verdict |
+|---|---|
+| 92 GB (target pod) | Comfortable — weights fit in RAM with margin |
+| 48–80 GB | Workable, little margin |
+| < 48 GB | Expect swapping or OOM |
 
-```bash
-git clone https://github.com/yourusername/pod-comfyui-vscode.git
-cd pod-comfyui-vscode
-docker-compose up --build
-```
+`init.sh` reports which bracket the pod falls in at boot.
 
-Access:
-- VSCode: http://localhost:8080
-- ComfyUI: http://localhost:3000
+**On `FAST_DISK`**: it makes the offloader use disk instead of host RAM. That
+only pays off with fast *local* NVMe. On RunPod the weights sit on a **network
+volume**, so enabling it on a 92 GB pod is a pessimisation twice over — hence
+the `false` default. `init.sh` warns if you set it anyway on a large-RAM host.
+
+If you do hit host-memory exhaustion, in order:
+
+1. `COMFYUI_EXTRA_ARGS=--disable-pinned-memory`
+2. `COMFYUI_EXTRA_ARGS=--disable-pinned-memory --cache-none`
+3. `FAST_DISK=true` — last resort, trades speed for survival
+4. Lower resolution and duration, then change one variable at a time
+
+Do **not** add `--lowvram`: it disables dynamic VRAM, which is the mechanism
+making H3 viable here.
+
+## Building
+
+Builds run on GitHub Actions — see [BUILD.md](BUILD.md). Local builds are
+supported for smoke tests via `docker compose up --build`, but are not the
+publishing path.
 
 ## Troubleshooting
 
-### SageAttention fails to compile
-
-```bash
-# In VSCode terminal or SSH
-rm -rf /workspace/sageattention_cache
-# Restart pod
-```
-
-### ComfyUI not loading models
-
-Check models directory:
-
-```bash
-ls -la /workspace/ComfyUI/models/checkpoints/
-```
-
-Make sure files have correct permissions.
-
-### Port not accessible
-
-Verify in RunPod dashboard:
-- Pod is running
-- Ports 8080 and 3000 are exposed
-- Click the port link (not direct IP)
-
-## Cost Estimation
-
-**RTX 5090** (~$0.90/hour):
-- Development time: Billed per hour
-- Active use recommended: 4-8 hours/day
-- Cost: ~$3.60-$7.20/day for active development
-
-**Tip**: Stop pod when not in use to save costs.
-
-## Git Workflow
-
-This repository uses Git Flow with two main branches:
-
-- **`main`**: Stable production-ready images. Pull from `<username>/pod-comfyui-vscode:main` or `:latest` for stable deployments.
-- **`develop`**: Development branch with new features and updates. Pull from `<username>/pod-comfyui-vscode:develop` for testing.
-
-Docker images are automatically built and tagged for both branches on every push via GitHub Actions.
-
-**Available Tags:**
-- `main` / `latest` - Latest stable release
-- `develop` - Latest development build
-- `main-{sha}` / `develop-{sha}` - Specific commit builds
-- `{date}-{sha}` - Date-tagged builds for chronological tracking
+| Symptom | Cause | Fix |
+|---|---|---|
+| H3 templates missing | ComfyUI < 0.30.0 | Pull a newer image tag |
+| Model absent from loader | Download incomplete | Check the pod log; re-run with `DOWNLOAD_MODELS=true` |
+| `CUDA error` / driver mismatch at boot | cu130 image on a 12.x host | Redeploy with the CUDA filter, or use `:cu129` |
+| R2V fails, T2V works | Wrong diffusion model selected | Pick `minimax_h3_ref2va_*`, and add `minimax-h3-ref2va` to `MODEL_SETS` |
+| Video generated without audio | Audio VAE not wired | Both VAE decodes must feed the `CreateVideo` node |
+| Clip slightly longer than requested | H3 frame-grid alignment (17k+5) | Expected: 5 s → 124 frames ≈ 5.17 s at 24 fps |
 
 ## License
 
-AGPL-3.0 (inherited from ComfyUI)
-
----
-
-**Developed for RunPod Pods**
-- Base: CUDA 12.9.0 + Ubuntu 24.04
-- Python 3.11 + PyTorch 2.8.0+cu129 (cuDNN 9.10.2 bundled)
-- ComfyUI + VSCode
-- Optimized for RTX 5090 with NVIDIA Driver 565+
-
-*Last update: December 2025*
+AGPL-3.0 (inherited from ComfyUI). MiniMax H3 weights are covered by the
+MiniMax Community License — check its terms before commercial use.

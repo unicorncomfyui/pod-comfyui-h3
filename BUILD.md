@@ -1,167 +1,131 @@
-# Local Docker Build Guide
+# Build & CI
 
-Build Docker images locally on your RTX 3080 instead of using GitLab CI/CD. This is faster, more reliable, and automatically cleans up disk space.
+Images are built and published exclusively by **GitHub Actions**. Local builds
+exist only for smoke-testing a change before pushing.
 
-## Prerequisites
+## One-time setup
 
-- Docker installed and running
-- Git installed (to get commit SHA)
-- 200GB+ disk space on D: drive
-- Docker Hub credentials set as environment variables
-
-## Setup Environment Variables
-
-Set your Docker Hub credentials:
+### 1. Create the GitHub repository
 
 ```bash
-# Windows PowerShell
-$env:DOCKER_USERNAME="your-dockerhub-username"
-$env:DOCKER_PASSWORD="your-docker-hub-token"
-
-# Windows CMD
-set DOCKER_USERNAME=your-dockerhub-username
-set DOCKER_PASSWORD=your-docker-hub-token
-
-# Linux/macOS
-export DOCKER_USERNAME="your-dockerhub-username"
-export DOCKER_PASSWORD="your-docker-hub-token"
+gh repo create unicorncomfyui/pod-comfyui-h3 --private --source=. --remote=origin
+git push -u origin main-h3
 ```
 
-## Usage
-
-### Build and Push Develop Branch
+Or, without `gh`: create the repository in the web UI, then
 
 ```bash
-# Default: builds develop branch
-bash build-and-push.sh
-
-# Or explicitly
-bash build-and-push.sh develop
+git remote add origin https://github.com/unicorncomfyui/pod-comfyui-h3.git
+git push -u origin main-h3
 ```
 
-This will:
-1. Build image with tags: `develop`, `develop-{SHA}`, `{DATE}-{SHA}`
-2. Push all tags to Docker Hub
-3. Delete local images to free disk space
-4. Show disk space before/after
+### 2. Add the Docker Hub secrets
 
-### Build and Push Main Branch
+*Settings → Secrets and variables → Actions*:
+
+| Secret | Value |
+|---|---|
+| `DOCKER_USERNAME` | Docker Hub username |
+| `DOCKER_PASSWORD` | Docker Hub **access token**, not the account password |
+
+Without these, `validate.yml` still runs but `docker-build.yml` fails at login.
+
+### 3. Enable code scanning
+
+*Settings → Code security → Code scanning* must be on for the Trivy SARIF
+upload to succeed. On a private repository this requires GitHub Advanced
+Security; if you do not have it, drop the two Trivy steps from
+`docker-build.yml`.
+
+## Workflows
+
+| Workflow | Trigger | Duration | Does |
+|---|---|---|---|
+| `validate.yml` | every push and PR | ~30 s | hadolint, shellcheck, manifest schema, compose syntax |
+| `docker-build.yml` | push to `main`/`develop`, manual | ~20–30 min per target | builds and publishes the CUDA matrix |
+
+`validate.yml` is the cheap gate: a shell typo caught there saves a 20-minute
+build.
+
+Pull requests build the image but never publish it — the Docker Hub login and
+push steps are skipped.
+
+## The build matrix
+
+Both targets come from the same `Dockerfile`, parameterised by two build args:
+
+| Target | `CUDA_BASE` | `TORCH_INDEX` | Host driver |
+|---|---|---|---|
+| `cu130` (primary) | `13.3.1-cudnn-runtime-ubuntu24.04` | `cu130` | 580+ |
+| `cu129` (fallback) | `12.9.2-cudnn-runtime-ubuntu24.04` | `cu129` | 575+ |
+
+Only `cu130` claims the `latest` tag, and only from `main`.
+
+### Adding a target
+
+Append to the `matrix.include` list in `docker-build.yml`:
+
+```yaml
+- target: cu132
+  cuda_base: 13.2.1-cudnn-runtime-ubuntu24.04
+  torch_index: cu132
+  primary: false
+```
+
+Nothing else changes: tags, cache scope and the Trivy scan all derive from
+`target`.
+
+### Building one target only
+
+*Actions → Build and Push Docker Image → Run workflow*, then pick the target
+from the dropdown. Useful when only the fallback needs a rebuild.
+
+## Caching
+
+Each matrix leg uses its own GitHub Actions cache scope
+(`cache-to: type=gha,scope=<target>`). Sharing one scope would make the two legs
+evict each other on every run, and neither would ever hit.
+
+GitHub caps Actions cache at 10 GB per repository; expect partial hits on the
+heavy PyTorch layer. A cold build is ~25–30 min, a warm one closer to 10.
+
+## Disk space on the runner
+
+`ubuntu-latest` starts with roughly 14 GB free, which is not enough. The
+workflow's first step removes the preinstalled .NET, Android, GHC, Swift and
+CodeQL toolchains to recover ~25 GB.
+
+The published image stays manageable because **no model weights are baked in** —
+the 42–63 GB of MiniMax H3 is downloaded to the network volume at first boot.
+Baking them in would blow past both the runner disk and the Docker Hub layer
+limits.
+
+## Local smoke test
 
 ```bash
-bash build-and-push.sh main
+# cu130 (default)
+docker compose up --build
+
+# cu129
+CUDA_BASE=12.9.2-cudnn-runtime-ubuntu24.04 TORCH_INDEX=cu129 docker compose up --build
 ```
 
-This will:
-1. Build image with tags: `latest`, `main`, `main-{SHA}`, `{DATE}-{SHA}`
-2. Push all tags to Docker Hub
-3. Delete local images to free disk space
+`DOWNLOAD_MODELS` defaults to `false` in `docker-compose.yml`, so a local run
+does not pull 63 GB. Set it to `true` only when deliberately testing the
+downloader.
 
-## What Gets Created
-
-For **develop** branch:
-- `<username>/pod-comfyui-vscode:develop`
-- `<username>/pod-comfyui-vscode:develop-abc1234` (commit SHA)
-- `<username>/pod-comfyui-vscode:20251220-abc1234` (date + SHA)
-
-For **main** branch:
-- `<username>/pod-comfyui-vscode:latest`
-- `<username>/pod-comfyui-vscode:main`
-- `<username>/pod-comfyui-vscode:main-abc1234`
-- `<username>/pod-comfyui-vscode:20251220-abc1234`
-
-## Disk Space Management
-
-The script automatically:
-- Shows disk space before build
-- Builds image (~10-14GB optimized, ~25-35GB during build)
-- Pushes to Docker Hub
-- **Deletes all local images** for this build
-- Cleans up dangling images
-- Shows disk space after cleanup
-
-**After build completes: 0GB local disk usage**
-
-Images are only stored on Docker Hub, not locally.
-
-## Build Time Estimates
-
-On RTX 3080 with 200GB disk:
-- First build: ~20-30 minutes (downloads base images, PyTorch 2.8.0+cu129, compiles SageAttention v2.2.0)
-- Subsequent builds: ~10-15 minutes (Docker layer cache)
-- Push to Docker Hub: ~8-12 minutes (larger image than rtx3000)
-- **Total: ~25-40 minutes** (vs 60+ minutes or failures on GitLab)
-- **Note**: SageAttention is pre-compiled in image for instant pod startup (0s)
-
-## Advantages Over GitLab CI/CD
-
-1. **Faster**: 2-3x faster with local Docker cache
-2. **More reliable**: No runner failures, no disk space errors
-3. **More disk space**: 200GB vs 10-12GB on shared runners
-4. **GPU acceleration**: Helps with CUDA 12.9.0 compilation
-5. **Zero local storage**: Auto-cleanup after push
-6. **Full control**: See real-time progress, debug issues
-
-## Troubleshooting
-
-### Error: Docker login failed
-Make sure `DOCKER_USERNAME` and `DOCKER_PASSWORD` are set correctly.
-
-### Error: No space left on device
-- Free up space on D: drive (need ~35GB during build)
-- Run `docker system prune -af --volumes` to clean Docker cache
-
-### Error: git not found
-Install Git for Windows or make sure it's in PATH.
-
-### Build is slow
-- First build downloads large base images (CUDA 12.9.0 without cuDNN)
-- PyTorch 2.8.0+cu129 includes cuDNN 9.10.2 bundled (optimized for RTX 5090)
-- Subsequent builds will be much faster due to layer cache
-- Consider building on SSD instead of HDD
-
-## Workflow Integration
-
-### Git Flow Workflow
+To lint exactly as CI does, before pushing:
 
 ```bash
-# 1. Make changes on develop branch
-git checkout develop
-# ... make changes ...
-
-# 2. Commit and push to GitLab
-git add .
-git commit -m "feat: add new feature"
-git push origin develop
-
-# 3. Build and push Docker image
-bash build-and-push.sh develop
-
-# 4. When ready for production
-git checkout main
-git merge develop
-git push origin main
-bash build-and-push.sh main
+docker run --rm -i hadolint/hadolint < Dockerfile
+shellcheck --severity=error init.sh start.sh
+python -m py_compile scripts/download_models.py
 ```
 
-### Quick One-Liner
+## Branches
 
-```bash
-# Commit, push git, build and push Docker - all in one
-git add . && git commit -m "update" && git push && bash build-and-push.sh
-```
+- `develop` — publishes `cu130-develop`, `cu129-develop`
+- `main` — publishes `latest`, `cu130-main`, `cu129-main`
 
-## Manual Build (Without Script)
-
-If you prefer manual control:
-
-```bash
-# Build
-docker build -t <username>/pod-comfyui-vscode:develop .
-
-# Push
-docker push <username>/pod-comfyui-vscode:develop
-
-# Clean up
-docker image rm <username>/pod-comfyui-vscode:develop
-docker image prune -f
-```
+Deploy pods from an immutable `cu130-main-<sha>` tag rather than `latest`, so a
+rebuild cannot change what a running template resolves to.

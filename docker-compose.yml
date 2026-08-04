@@ -1,24 +1,44 @@
-version: '3.8'
+# Local smoke test only. Production images are built by GitHub Actions and
+# pulled from Docker Hub - see .github/workflows/docker-build.yml.
+#
+#   docker compose up --build          # cu130 (default)
+#   TORCH_INDEX=cu129 CUDA_BASE=12.9.2-cudnn-runtime-ubuntu24.04 docker compose up --build
 
 services:
-  comfyui-vscode:
+  comfyui-h3:
     build:
       context: .
       dockerfile: Dockerfile
-    image: pod-comfyui-vscode:latest
-    container_name: pod-comfyui-vscode
+      args:
+        CUDA_BASE: ${CUDA_BASE:-13.3.1-cudnn-runtime-ubuntu24.04}
+        TORCH_INDEX: ${TORCH_INDEX:-cu130}
+    image: pod-comfyui-h3:${TORCH_INDEX:-cu130}
+    container_name: pod-comfyui-h3
 
     ports:
-      - "8080:8080"  # VSCode
-      - "3000:3000"  # ComfyUI
+      - "${VSCODE_PORT:-8080}:8080"
+      - "${COMFYUI_PORT:-3000}:3000"
 
     environment:
-      - VSCODE_PORT=8080
-      - COMFYUI_PORT=3000
+      VSCODE_PORT: 8080
+      COMFYUI_PORT: 3000
+      # 63 GB of weights - keep it off by default for a local smoke test.
+      DOWNLOAD_MODELS: ${DOWNLOAD_MODELS:-false}
+      MODEL_SETS: ${MODEL_SETS:-minimax-h3-fl2va}
+      COMFYUI_DATA_DIR: /workspace/comfyui-data
+      FAST_DISK: ${FAST_DISK:-false}
+      VRAM_HEADROOM: ${VRAM_HEADROOM:-}
+      RESERVE_VRAM: ${RESERVE_VRAM:-}
+      COMFYUI_EXTRA_ARGS: ${COMFYUI_EXTRA_ARGS:-}
+      PREWARM_SET: ${PREWARM_SET:-}
+      HF_TOKEN: ${HF_TOKEN:-}
 
     volumes:
       - ./workspace:/workspace
-      - ./models:/app/comfyui/models
+
+    # Dynamic VRAM offloading pushes a lot through host RAM; the default 64 MB
+    # of shared memory is not enough for the dataloaders.
+    shm_size: '8gb'
 
     deploy:
       resources:
@@ -28,9 +48,6 @@ services:
               count: 1
               capabilities: [gpu]
 
-    runtime: nvidia
-
     stdin_open: true
     tty: true
-
     restart: unless-stopped

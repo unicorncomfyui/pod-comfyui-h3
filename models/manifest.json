@@ -1,0 +1,132 @@
+{
+  "$comment": [
+    "Declarative model catalogue. Adding a model means adding an entry here -",
+    "no change to init.sh or the Dockerfile. Select what a pod downloads with",
+    "the MODEL_SETS environment variable (comma-separated set names).",
+    "",
+    "'dest' is relative to <ComfyUI>/models/.",
+    "'size_gb' is informational and used for the pre-flight disk-space check."
+  ],
+  "sets": {
+    "minimax-h3-fl2va": {
+      "description": "MiniMax H3 - Text-to-Video and Image-to-Video (first/last frame). 2K, 24fps, native stereo audio.",
+      "default": true,
+      "files": [
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+          "dest": "diffusion_models",
+          "size_gb": 20.97
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "dest": "text_encoders",
+          "size_gb": 15.69
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_video_vae_fp16.safetensors",
+          "dest": "vae",
+          "size_gb": 5.21
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+          "dest": "vae",
+          "size_gb": 0.61
+        }
+      ]
+    },
+    "minimax-h3-ref2va": {
+      "description": "MiniMax H3 - Reference-to-Video. Character consistency, style and motion transfer. Shares the text encoder and VAEs with fl2va.",
+      "default": true,
+      "files": [
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+          "dest": "diffusion_models",
+          "size_gb": 20.97
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "dest": "text_encoders",
+          "size_gb": 15.69
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_video_vae_fp16.safetensors",
+          "dest": "vae",
+          "size_gb": 5.21
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+          "dest": "vae",
+          "size_gb": 0.61
+        }
+      ]
+    },
+    "minimax-h3-fp8": {
+      "description": "MiniMax H3 fl2va in fp8_scaled instead of int8_convrot. Alternative quantisation - try it if int8 convrot misbehaves on your driver.",
+      "default": false,
+      "files": [
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+          "dest": "diffusion_models",
+          "size_gb": 20.96
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "dest": "text_encoders",
+          "size_gb": 15.69
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_video_vae_fp16.safetensors",
+          "dest": "vae",
+          "size_gb": 5.21
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+          "dest": "vae",
+          "size_gb": 0.61
+        }
+      ]
+    },
+    "minimax-h3-hq": {
+      "description": "MiniMax H3 fl2va in unpruned int8_convrot (34 GB) with the int8 text encoder. Exceeds a single 32 GB card comfortably - for multi-GPU or heavy-RAM hosts only.",
+      "default": false,
+      "files": [
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors",
+          "dest": "diffusion_models",
+          "size_gb": 34.04
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+          "dest": "text_encoders",
+          "size_gb": 27.14
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_video_vae_fp16.safetensors",
+          "dest": "vae",
+          "size_gb": 5.21
+        },
+        {
+          "repo": "Comfy-Org/MiniMax-H3",
+          "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+          "dest": "vae",
+          "size_gb": 0.61
+        }
+      ]
+    }
+  }
+}

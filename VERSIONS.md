@@ -1,620 +1,232 @@
-# Version Compatibility Matrix
+# Version & Compatibility Reference
 
-Matrice de compatibilité des versions critiques pour différentes configurations RunPod.
-
-## Vue d'ensemble rapide
-
-| CUDA Toolkit | GPU Support | PyTorch | RunPod Availability | Status |
-|--------------|-------------|---------|---------------------|--------|
-| **12.9.0** | RTX 5090 (sm_12.0), RTX 4090 (sm_8.9) | 2.8.0+cu129 | Limité (nouveaux pods) | **CURRENT** |
-| **12.8.1** | RTX 4090 (sm_8.9), RTX 4080 (sm_8.9) | 2.8.0+cu128, 2.6.0 | Large disponibilité | Compatible |
-| **12.6.0** | RTX 4090 (sm_8.9), RTX 3090 (sm_8.6) | 2.5.0, 2.4.0 | Large disponibilité | Legacy |
+State of the stack as of **2026-08-04**. Figures below are either pinned in this
+repository or read from upstream; no benchmark numbers are quoted unless the
+source is named.
 
 ---
 
-## Component Deep Dive - Rôle et Gains de Performance
+## 1. Pinned versions
 
-Comprendre ce que fait chaque brique et son impact sur les performances.
+Everything is set by build args in [`Dockerfile`](Dockerfile) — change them
+there, not in the CI workflow.
 
-### 1. **ComfyUI** - L'Application Principale
+| Build arg | Default | Alternatives |
+|---|---|---|
+| `CUDA_BASE` | `13.3.1-cudnn-runtime-ubuntu24.04` | `12.9.2-cudnn-runtime-ubuntu24.04` |
+| `TORCH_INDEX` | `cu130` | `cu129`, `cu132`, `cu126` |
+| `TORCH_VERSION` | `2.13.0` | any version present on the chosen index |
+| `PYTHON_VERSION` | `3.13` | 3.11 – 3.15 |
+| `COMFYUI_VERSION` | `v0.30.0` | any tag on `Comfy-Org/ComfyUI` |
+| `CODE_SERVER_VERSION` | `4.131.0` | — |
 
-**Rôle**: Interface node-based pour la génération d'images/vidéos avec Stable Diffusion, FLUX, Z-Image-Turbo, etc.
+### torch 2.13.0 availability per CUDA index
 
-**Ce que ça fait**:
-- Orchestration de workflows de génération (text-to-image, img2img, video, upscaling)
-- Gestion des modèles (checkpoints, LoRAs, VAE, text encoders)
-- Interface graphique node-based pour créer des pipelines
-- API pour automation
-- Support de custom nodes (extensions communautaires)
+Checked against `download.pytorch.org/whl/<index>/torch/`:
 
-**Versions importantes**:
-- **Commit 36357bb** (déc 2025): Version stable avec support WAN 2.2, Z-Image-Turbo
-- **Commits précédents**: Risque d'incompatibilité avec custom nodes récents
+| Index | 2.13.0 | Python wheels | Notes |
+|---|:---:|---|---|
+| `cu126` | yes | cp310–cp315 | legacy |
+| `cu128` | **no** | — | stops at 2.11.0 — do not target |
+| `cu129` | yes | cp310–cp315 | fallback target |
+| `cu130` | yes | cp310–cp315 | **primary**, ComfyUI's recommended stable index |
+| `cu132` | yes | cp310–cp315 | ComfyUI's nightly index; viable, untested here |
 
-**Gains vs alternatives**:
-- Node-based workflow: +300% productivité vs scripts Python
-- Gestion mémoire optimisée: -40% VRAM vs naive implementations
-- Custom nodes ecosystem: +1000 extensions disponibles
-- Zero-code interface: accessible aux non-programmeurs
-
-**Performance critique**: ComfyUI lui-même est léger, la perf dépend des composants en dessous (PyTorch, CUDA, SageAttention)
-
----
-
-### 2. **CUDA Toolkit** - Le Runtime GPU
-
-**Rôle**: Plateforme de calcul parallèle NVIDIA qui permet d'exécuter du code sur GPU
-
-**Ce que ça fait**:
-- Fournit les bibliothèques de calcul GPU (cuBLAS, cuFFT, cuSPARSE)
-- Compile les kernels CUDA (nvcc compiler)
-- Gère l'allocation mémoire VRAM (cudaMalloc)
-- Interface entre PyTorch et le hardware GPU
-
-**Versions critiques**:
-- **CUDA 12.9.0**: Support RTX 5090 (Blackwell sm_12.0), nouvelles optimisations mémoire
-- **CUDA 12.8.1**: Support RTX 4090 (Ada sm_8.9), large disponibilité
-- **CUDA 12.6.0**: Legacy, RTX 3000/4000 support
-
-**Gains CUDA 12.9 vs 12.6**:
-- **+15-20% throughput** sur operations matmul (RTX 5090)
-- **+10% mémoire efficace** grâce à nouvelles optimizations
-- **Support sm_12.0**: instructions spécifiques Blackwell (FP8, tensor cores gen4)
-- **cuDNN 9.10.2 bundled**: optimisations attention mechanisms
-
-**Performance impact**: Critical (5/5) - tout passe par CUDA
+`cu128` is a dead end for this project: it never received a torch 2.13 build.
 
 ---
 
-### 3. **cuDNN** - Deep Neural Networks Library
+## 2. Driver requirements
 
-**Rôle**: Bibliothèque d'opérations optimisées pour réseaux de neurones (convolutions, attention, normalisation)
+| Image target | Minimum host driver | RunPod availability |
+|---|---|---|
+| `cu130` | 580+ | machines advertise CUDA up to 13.3 |
+| `cu129` | 575+ | the majority of the fleet |
 
-**Ce que ça fait**:
-- Implémente convolutions 2D/3D ultra-optimisées
-- Attention mechanisms (critical pour Transformers)
-- Batch normalization, pooling, activation functions
-- Auto-tuning pour trouver les meilleurs algorithmes
+RunPod's *Additional filters → CUDA Versions* dropdown spans 12.5 → 13.3, i.e.
+the fleet is heterogeneous. This is the reason the `cu129` leg exists — not a
+performance choice.
 
-**Versions critiques**:
-- **cuDNN 9.10.2** (PyTorch 2.8.0+cu129): Optimisations Blackwell, support FP8
-- **cuDNN 9.9.0** (CUDA 12.8): Version stable, moins d'optimizations Blackwell
-- **cuDNN 9.0.0** (CUDA 12.6): Legacy
-
-**Gains cuDNN 9.10.2 vs 9.9.0**:
-- **+12-18% vitesse attention** (critique pour Diffusion models)
-- **+8-10% convolutions** grâce à nouveaux algorithmes
-- **Support FP8**: +30-40% throughput sur RTX 5090 (vs FP16)
-- **-15% VRAM usage** pour grandes batch sizes
-
-**Performance impact**: Critical (5/5) - utilisé par chaque layer du modèle
-
-**Note importante**: PyTorch 2.8.0+cu129 bundle cuDNN 9.10.2, donc pas besoin dans base image
+The driver is supplied by the host, never by the container. `init.sh` compares
+the detected driver against `BUILD_TORCH_INDEX` at boot and prints an explicit
+error on a mismatch rather than letting CUDA fail obscurely later.
 
 ---
 
-### 4. **PyTorch** - Le Framework Deep Learning
+## 3. MiniMax H3
 
-**Rôle**: Framework Python pour construire et entraîner des réseaux de neurones
+Released 2026-07-31 (API), weights published 2026-08-03, native ComfyUI support
+merged the same day in `Comfy-Org/ComfyUI` PR #15224 — hence the hard floor of
+ComfyUI **0.30.0**.
 
-**Ce que ça fait**:
-- Définit les modèles (nn.Module)
-- Gère l'autograd (backpropagation automatique)
-- Interface haut-niveau pour CUDA/cuDNN
-- torch.compile (optimisation JIT avec Triton)
-- Gestion des tensors et opérations
+**Output**: up to 2K (1440 px short edge), 24 fps, 4–15 s, native stereo audio.
+Native canvas is 768 px short edge; 2K comes from in-model regeneration.
+**Input**: ≤9 reference images, ≤3 reference videos, ≤3 reference audio clips,
+12 files and 64 MB total, ≤7000-character prompt.
 
-**Versions critiques**:
-- **PyTorch 2.8.0+cu129**: Support CUDA 12.9, cuDNN 9.10.2, Triton 3.1
-- **PyTorch 2.8.0+cu128**: Support CUDA 12.8, cuDNN 9.9
-- **PyTorch 2.5.0**: Dernière version pour CUDA 12.6
+### Weights — [`Comfy-Org/MiniMax-H3`](https://huggingface.co/Comfy-Org/MiniMax-H3)
 
-**Gains PyTorch 2.8.0 vs 2.5.0**:
-- **+20-25% inference speed** grâce à torch.compile amélioré
-- **+15% mémoire efficace** avec nouvelles allocations stratégies
-- **Better SDPA** (Scaled Dot Product Attention): +10-15% sur attention
-- **Flash Attention 3 support**: +40% vitesse attention (vs FA2)
-- **Triton 3.1**: génération kernels optimisés automatiques
+| File | Size | Used by |
+|---|---:|---|
+| `diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` | 20.97 GB | T2V, I2V |
+| `diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` | 20.97 GB | R2V |
+| `diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors` | 20.96 GB | alternative quantisation |
+| `diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors` | 34.04 GB | unpruned |
+| `diffusion_models/minimax_h3_fl2va_bf16.safetensors` | 66.28 GB | full precision |
+| `text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | 15.69 GB | all sets |
+| `text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors` | 27.14 GB | `-hq` set |
+| `vae/minimax_h3_video_vae_fp16.safetensors` | 5.21 GB | all sets |
+| `vae/minimax_h3_audio_vae_fp32.safetensors` | 0.61 GB | all sets |
 
-**Performance impact**: Critical (5/5) - cœur du système
+Totals: **42.48 GB** for T2V/I2V, **63.45 GB** adding R2V (the text encoder and
+both VAEs are shared, and the downloader deduplicates them).
 
-**ComfyUI specifics**:
-- ComfyUI utilise PyTorch pour charger modèles Stable Diffusion
-- Chaque "node" ComfyUI appelle des operations PyTorch
-- torch.compile() peut optimiser certains workflows (+15-30%)
+The full repository is 385 GB. Only the pruned variants are within reach of a
+single 32 GB card.
 
----
+### Target pod profile
 
-### 5. **SageAttention** - Attention Quantifiée Optimisée
+| | RunPod RTX 5090 |
+|---|---|
+| VRAM | 32 GB GDDR7 |
+| Host RAM | 92 GB |
+| vCPU | 16 |
+| Price | $0.99/hr |
+| Max GPUs/pod | 8 |
 
-**Rôle**: Remplace les mécanismes d'attention standard par des versions quantifiées (INT8/FP16) ultra-rapides
+Memory budget for one workflow — `fl2va` and `ref2va` are alternatives and are
+never resident together, so the peak is a single diffusion model:
 
-**Ce que ça fait**:
-- Quantifie les matrices Q/K/V en INT8 (8-bit integers)
-- Calcule l'attention avec précision mixte (INT8 compute, FP16 accumulate)
-- Exploite les Tensor Cores optimisés pour INT8
-- Dé-quantifie le résultat en FP16/BF16
-- Compatible avec SDPA de PyTorch (drop-in replacement)
+| Component | Size |
+|---|---:|
+| Diffusion model (pruned int8-convrot) | 20.97 GB |
+| Text encoder (NVFP4 AWQ) | 15.69 GB |
+| Video VAE (fp16) | 5.21 GB |
+| Audio VAE (fp32) | 0.61 GB |
+| **Peak resident** | **42.48 GB** |
 
-**Versions critiques**:
-- **v2.2.0 (eb615cf)**: Support Blackwell sm_12.0, bug fixes, optimisations RTX 5090
-- **v2.1.0**: Support Ada sm_8.9, optimisations RTX 4090
-- **v1.x**: Early version, support limité
+Against 92 GB of host RAM that leaves roughly 50 GB for the OS, ComfyUI, pinned
+transfer buffers and 2K video decode. Comfortable — which is why `FAST_DISK`
+defaults to off: offloading to a *network* volume would be slower than the RAM
+that is already available.
 
-**Gains SageAttention v2.2.0**:
-- **+35-50% vitesse attention** vs standard PyTorch attention (RTX 5090)
-- **+25-40% vitesse attention** vs Flash Attention 2 (FA2)
-- **-50% VRAM usage** pour attention (matrices INT8 vs FP16)
-- **Qualité préservée**: imperceptible quality loss (<0.1% error)
-- **Pas de retraining**: drop-in replacement pour modèles existants
+The 63.45 GB figure quoted elsewhere is the **disk** footprint of installing
+both variants, not a RAM requirement.
 
-**Performance impact**: Very High (4/5) - attention = 60-70% du temps de génération
+The `minimax-h3-hq` set (67 GB of weights, unpruned) is the case where the 8-GPU
+ceiling becomes interesting; it is not viable on a single card.
 
-**ComfyUI specifics**:
-- ComfyUI peut utiliser SageAttention automatiquement si installé
-- Gain massif sur modèles Transformer-based (FLUX, SD3, Z-Image-Turbo)
-- Permet de générer images plus grandes (1024→2048px) avec même VRAM
+### Why RTX 5090 specifically
 
-**Architecture dependency**: CRITICAL - DOIT être compilé pour la bonne architecture GPU (sm_12.0 pour RTX 5090)
-
----
-
-### 6. **Triton** - Compilateur de Kernels GPU
-
-**Rôle**: Génère automatiquement des kernels CUDA optimisés à partir de code Python
-
-**Ce que ça fait**:
-- Utilisé par torch.compile() pour optimiser les modèles
-- Génère kernels GPU sans écrire de CUDA
-- Auto-tuning pour trouver les meilleures configs
-- Fusion d'opérations (kernel fusion) pour réduire les accès mémoire
-
-**Versions critiques**:
-- **Triton 3.1.0** (PyTorch 2.8.0+cu129): Support Blackwell, nouvelles optimisations
-- **Triton 3.0.0** (PyTorch 2.8.0+cu128): Stable, moins d'optimizations
-- **Triton 2.3.0** (PyTorch 2.5.0): Legacy
-
-**Gains Triton 3.1.0**:
-- **+10-20% vitesse** sur operations fusionnées
-- **-20% temps compilation** (important pour torch.compile)
-- **Support sm_12.0**: exploitation tensor cores Blackwell
-- **Meilleur auto-tuning**: trouve configs optimales +5-10% plus rapides
-
-**Performance impact**: High (3/5) - important si torch.compile activé, sinon limité
-
-**ComfyUI specifics**:
-- Triton utilisé en backend par PyTorch (transparent)
-- SageAttention utilise Triton pour certaines opérations
-- Pas d'interaction directe avec ComfyUI
+The text encoder is **NVFP4**. FP4 is a Blackwell tensor-core format; on Ada or
+Ampere it falls back to an emulated path. This is an architectural requirement,
+not a preference — `init.sh` warns when compute capability is not 12.0.
 
 ---
 
-### 7. **tcmalloc** - Allocateur Mémoire Optimisé
+## 4. The runtime stack that replaced SageAttention
 
-**Rôle**: Remplace malloc/free du système par un allocateur multi-thread optimisé
+ComfyUI 0.27–0.30 moved kernels and offloading in-tree. Both are ordinary
+dependencies in ComfyUI's `requirements.txt`, so they are pinned by the ComfyUI
+tag rather than by this repository.
 
-**Ce que ça fait**:
-- Allocation/désallocation mémoire CPU (RAM système, pas VRAM)
-- Cache thread-local pour réduire contentions
-- Réduction de la fragmentation mémoire
-- Meilleure performance multi-thread
+### `comfy-kitchen` — [Comfy-Org/comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen)
 
-**Version**: 2.14-3 (Ubuntu 24.04), architecture-agnostic
+Kernel library with eager/cuda/triton/hip backends. Relevant to H3:
+`quantize_nvfp4`, `dequantize_nvfp4`, `scaled_mm_nvfp4`, `quantize_int8_convrot_weight`,
+`dequantize_int8_convrot_weight_dtype`, `int8_linear`, `gemv_awq_w4a16`, plus
+fused RoPE and AdaLN variants.
 
-**Gains tcmalloc vs malloc standard**:
-- **+5-15% vitesse** allocations/désallocations fréquentes
-- **-30-50% fragmentation** mémoire (moins de OOM)
-- **+10-20% multi-thread perf** (DataLoaders, custom nodes parallèles)
-- **Pas d'overhead**: activation via LD_PRELOAD (0 modification code)
+### `comfy-aimdo` — [Comfy-Org/comfy-aimdo](https://github.com/Comfy-Org/comfy-aimdo)
 
-**Performance impact**: Medium (2/5) - utile mais pas critique, impact surtout sur RAM CPU
+A PyTorch VRAM allocator doing on-demand weight offloading. Models get a Virtual
+Base Address Register costing only address space; tensors are faulted in when a
+layer needs them and evicted under pressure, by priority. Requires PyTorch 2.8+
+and CUDA 12.8+, NVIDIA only.
 
-**ComfyUI specifics**:
-- Améliore la gestion mémoire de ComfyUI (chargement modèles, caching)
-- Réduit les crashes OOM sur workflows complexes
-- Utile pour custom nodes avec beaucoup d'allocations
+This is the mechanism that makes 42–63 GB of weights run on 32 GB of VRAM.
 
----
+### SageAttention: removed
 
-### 8. **NVIDIA Driver** - Le Pont Hardware/Software
+`thu-ml/SageAttention` has had no commit since 2026-01-17 and PyPI still serves
+1.0.6. ComfyUI's own guidance notes that some H3 layers are not FP16/BF16, so
+they fall back to standard PyTorch anyway. Compiling it cost ~20 minutes of
+build time for no benefit on this model, so it is gone — which is also what
+allows the image to sit on `-runtime` instead of `-devel`.
 
-**Rôle**: Driver kernel qui permet à CUDA de communiquer avec le GPU
-
-**Ce que ça fait**:
-- Interface entre CUDA et le hardware GPU
-- Gestion de l'alimentation, clock speeds
-- Fournit les APIs bas-niveau (OpenGL, Vulkan, CUDA)
-
-**Versions critiques**:
-- **Driver 575.51.03**: RunPod CUDA 12.9 (au 11/01/2026) - Support RTX 5090 Blackwell
-- **Driver 565.57+**: Minimum requis pour CUDA 12.9 + RTX 5090
-- **Driver 560.28+**: Requis pour CUDA 12.8
-- **Driver 550.54+**: Requis pour CUDA 12.6
-
-**Gains nouveaux drivers**:
-- **Bug fixes**: stabilité améliorée
-- **Support nouvelles architectures**: Blackwell pour 565+, optimisations 575+ pour RTX 5090
-- **Optimisations**: +2-5% perf générale sur nouvelles générations GPU
-- **Pas de backward compat breaking**: driver récent = compatible anciens CUDA
-
-**Performance impact**: Medium (2/5) - important pour compatibilité, impact perf limité
-
-**Note**: Sur RunPod, le driver est géré par l'host, pas par le container
+`--use-sage-attention` still exists in ComfyUI if you install it yourself.
 
 ---
 
-### 9. **Python** - Le Langage
+## 5. ComfyUI memory flags
 
-**Rôle**: Langage de programmation de haut niveau
+From `comfy/cli_args.py` at v0.30.0. Dynamic VRAM is on by default on NVIDIA
+unless `--highvram`, `--gpu-only`, `--novram` or `--cpu` is passed.
 
-**Versions critiques**:
-- **Python 3.11**: Current, bon compromis perf/compatibilité
-- **Python 3.13**: +10-15% vitesse mais risque compatibilité custom nodes
-- **Python 3.10**: Legacy, compatible mais plus lent
+| Flag | Effect |
+|---|---|
+| `--enable-dynamic-vram` | force on where it is not default |
+| `--disable-dynamic-vram` | revert to estimate-based loading |
+| `--vram-headroom N` | GB kept completely free above the default |
+| `--fast-disk` | prefer disk-backed offload over unpinned RAM |
+| `--async-offload [N]` | async weight offload, N streams (default 2, on for NVIDIA) |
+| `--reserve-vram N` | GB reserved for the OS |
+| `--disable-pinned-memory` | relieves host-RAM pressure, costs transfer speed |
+| `--cache-none` | re-executes every node each run; lowest RAM |
+| `--lowvram` | **no-op when dynamic VRAM is on** — do not use it here |
 
-**Gains Python 3.11 vs 3.10**:
-- **+10-15% vitesse** overall (faster interpreter)
-- **Meilleure gestion exceptions**: -20% overhead try/except
-- **Compatibilité**: large ecosystem compatible
-
-**Performance impact**: Low (1/5) - bottleneck = GPU, pas CPU Python
-
-**ComfyUI specifics**:
-- ComfyUI écrit en Python
-- Custom nodes en Python
-- Impact perf limité car compute = GPU-bound
-
----
-
-## Résumé des Gains Cumulatifs
-
-Configuration **CUDA 12.9.0 RTX 5090** (current) vs **CUDA 12.6.0 RTX 4090** (legacy):
-
-| Composant | Gain Performance | Importance |
-|-----------|------------------|------------|
-| **RTX 5090 GPU** | +35-45% TFLOPS | Critical (5/5) - Hardware |
-| **CUDA 12.9 + sm_12.0** | +15-20% utilization | Critical (5/5) |
-| **cuDNN 9.10.2** | +12-18% attention | Critical (5/5) |
-| **PyTorch 2.8.0** | +20-25% inference | Critical (5/5) |
-| **SageAttention v2.2.0** | +35-50% attention | Very High (4/5) |
-| **Triton 3.1.0** | +10-20% fused ops | High (3/5) |
-| **tcmalloc** | +5-15% allocations | Medium (2/5) |
-| **Driver 565+** | +2-5% stability | Medium (2/5) |
-
-**Gain cumulatif estimé**: **+60-80% vitesse génération** (RTX 5090 CUDA 12.9 optimisé vs RTX 4090 CUDA 12.6)
-
-**Breakdown**:
-- ~40% du gain = hardware (RTX 5090 vs 4090)
-- ~20% du gain = software (CUDA 12.9, PyTorch 2.8, SageAttention)
-- ~5% du gain = optimisations (tcmalloc, Triton, driver)
+`--lowvram` is worth calling out: its own help text says it does nothing when
+dynamic VRAM is enabled, and selecting it can only disable the better path.
 
 ---
 
-## Impact sur ComfyUI Workflows
+## 6. GPU reference
 
-### Génération d'Image 1024x1024 (FLUX.1-dev, 28 steps)
-
-| Configuration | Temps Génération | VRAM Usage | Qualité |
-|--------------|------------------|------------|---------|
-| **RTX 5090 + CUDA 12.9 + SageAttention v2.2** | ~8s | 18GB | Excellent |
-| **RTX 5090 + CUDA 12.9 (sans SageAttention)** | ~12s | 24GB | Excellent |
-| **RTX 4090 + CUDA 12.8 + SageAttention v2.1** | ~11s | 19GB | Excellent |
-| **RTX 4090 + CUDA 12.6 (sans SageAttention)** | ~18s | 26GB | Excellent |
-
-**Gains observés**:
-- SageAttention: **-33% temps, -25% VRAM**
-- RTX 5090 vs 4090 (même config): **-27% temps**
-- CUDA 12.9 vs 12.6: **-15% temps** (avec architecture correcte)
-
-### Upscaling 4x (UltraSharp, 512→2048px)
-
-| Configuration | Temps | VRAM |
-|--------------|-------|------|
-| **RTX 5090 optimisé** | ~2s | 4GB |
-| **RTX 4090 legacy** | ~4s | 5GB |
-
-### Video Generation (WAN 2.2, 16 frames 512x512)
-
-| Configuration | Temps | VRAM |
-|--------------|-------|------|
-| **RTX 5090 + SageAttention** | ~45s | 28GB |
-| **RTX 4090 + SageAttention** | ~65s | 30GB |
-| **RTX 4090 legacy** | ~90s | 32GB (OOM risk) |
+| GPU | VRAM | Arch | CC | `TORCH_CUDA_ARCH_LIST` | H3 viable |
+|---|---|---|---|---|---|
+| RTX PRO 6000 Blackwell | 96 GB | Blackwell | sm_120 | `12.0` | yes, comfortably |
+| B200 | 180 GB | Blackwell (DC) | sm_120 | `12.0` | yes |
+| **RTX 5090** | **32 GB** | **Blackwell** | **sm_120** | **`12.0`** | **yes, with offloading — the target** |
+| H100 SXM | 80 GB | Hopper | sm_90 | `9.0` | yes, but no native NVFP4 |
+| RTX 4090 | 24 GB | Ada | sm_89 | `8.9` | degraded, NVFP4 emulated |
+| RTX 3090 | 24 GB | Ampere | sm_86 | `8.6` | not recommended |
 
 ---
 
-## CUDA 12.9.0 (Current - RTX 5090 Optimized)
+## 7. Migration from `pod-comfyui-vscode`
 
-**Target GPU**: RTX 5090 (Blackwell sm_12.0), RTX 4090 (sm_8.9)
-**RunPod Availability**: Limité - nouveaux pods uniquement
-**Driver Required**: NVIDIA 575.51.03+ (RunPod utilise 575.51.03 au 11/01/2026)
+| | Old (Dec 2025) | New |
+|---|---|---|
+| Base | `cuda:12.9.0-devel-ubuntu24.04` | `cuda:13.3.1-cudnn-runtime-ubuntu24.04` |
+| Python | 3.11 | 3.13, in a venv |
+| PyTorch | 2.8.0+cu129 | 2.13.0+cu130 |
+| ComfyUI | commit `36357bb`, `comfyanonymous/*` | `v0.30.0`, `Comfy-Org/*` |
+| Attention | SageAttention v2.2.0, compiled | comfy-kitchen, prebuilt |
+| Offloading | none | comfy-aimdo |
+| Model | Z-Image-Turbo (image) | MiniMax H3 (video + audio) |
+| Custom nodes | 20 | 7, video-oriented |
+| ComfyUI location | copied to the volume on first boot | stays in the image |
+| Model selection | hardcoded in `init.sh` | `models/manifest.json` + `MODEL_SETS` |
+| Build | local Docker on Windows | GitHub Actions, cu130/cu129 matrix |
+| Registry origin | GitLab | GitHub |
 
-### Stack complet
+The ComfyUI-location change is the one with lasting consequences: the old design
+copied ComfyUI onto the network volume at first boot and then always preferred
+that copy, so a volume permanently pinned whichever ComfyUI version created it
+and image updates had no effect. Now only mutable data persists.
 
-| Component | Version | Notes |
-|-----------|---------|-------|
-| **Base Image** | `nvidia/cuda:12.9.0-devel-ubuntu24.04` | Sans cuDNN (voir note) |
-| **cuDNN** | 9.10.2 | Bundled in PyTorch (pas dans base image) |
-| **Python** | 3.11 | Via deadsnakes PPA |
-| **PyTorch** | 2.8.0+cu129 | Index: `https://download.pytorch.org/whl/cu129` |
-| **torchvision** | 0.20.0+cu129 | Included with PyTorch |
-| **torchaudio** | 2.5.0+cu129 | Included with PyTorch |
-| **Triton** | 3.1.0 | Bundled in PyTorch |
-| **NVIDIA Driver** | 575.51.03 | Provided by RunPod host (au 11/01/2026) |
-| **SageAttention** | v2.2.0 (eb615cf) | Compiled with sm_12.0 support |
-| **ComfyUI** | 36357bb | Stable commit |
-| **tcmalloc** | 2.14-3 | Ubuntu 24.04 package |
+---
 
-### Architecture GPU
-
-```dockerfile
-ENV TORCH_CUDA_ARCH_LIST="12.0"  # RTX 5090 Blackwell
-# OU
-ENV TORCH_CUDA_ARCH_LIST="8.9"   # RTX 4090 Ada (si besoin rétrocompat)
-```
-
-### SageAttention compilation
+## 8. Verification commands
 
 ```bash
-git checkout eb615cf  # v2.2.0 - Blackwell support
-TORCH_CUDA_ARCH_LIST="12.0" python setup.py build_ext --inplace
-pip install --no-build-isolation --no-deps .
-```
-
-### Dockerfile snippet
-
-```dockerfile
-FROM nvidia/cuda:12.9.0-devel-ubuntu24.04
-
-ENV TORCH_CUDA_ARCH_LIST="12.0"
-
-RUN pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu129
-```
-
-### Pros / Cons
-
-**Pros**:
-- Support natif RTX 5090 (sm_12.0)
-- cuDNN 9.10.2 optimisé pour Blackwell
-- PyTorch 2.8.0 avec dernières optimisations
-- SageAttention v2.2.0 support Blackwell
-
-**Cons**:
-- Disponibilité limitée sur RunPod (nouveaux pods)
-- Image plus large (~14-16GB vs ~12-13GB pour 12.8)
-- Moins de pods compatibles
-
----
-
-## CUDA 12.8.1 (Wide RunPod Availability)
-
-**Target GPU**: RTX 4090 (Ada sm_8.9), RTX 4080, RTX 4070
-**RunPod Availability**: Large - majorité des pods
-**Driver Required**: NVIDIA 560.28.03+
-
-### Stack complet
-
-| Component | Version | Notes |
-|-----------|---------|-------|
-| **Base Image** | `nvidia/cuda:12.8.1-cudnn9-devel-ubuntu24.04` | cuDNN inclus dans base |
-| **cuDNN** | 9.9.0 | Dans base image (pas bundled PyTorch) |
-| **Python** | 3.11 | Via deadsnakes PPA |
-| **PyTorch** | 2.8.0+cu128 | Index: `https://download.pytorch.org/whl/cu128` |
-| **torchvision** | 0.20.0+cu128 | Included with PyTorch |
-| **torchaudio** | 2.5.0+cu128 | Included with PyTorch |
-| **Triton** | 3.0.0 | Bundled in PyTorch |
-| **NVIDIA Driver** | 560.28.03 (RunPod) | Provided by RunPod host |
-| **SageAttention** | v2.1.0 (commit ?) | À vérifier pour sm_8.9 |
-| **ComfyUI** | 36357bb | Stable commit |
-| **tcmalloc** | 2.14-3 | Ubuntu 24.04 package |
-
-### Architecture GPU
-
-```dockerfile
-ENV TORCH_CUDA_ARCH_LIST="8.9"  # RTX 4090/4080 Ada
-```
-
-### SageAttention compilation
-
-```bash
-# À vérifier : quelle version supporte sm_8.9 ?
-git checkout <commit-to-verify>
-TORCH_CUDA_ARCH_LIST="8.9" python setup.py build_ext --inplace
-pip install --no-build-isolation --no-deps .
-```
-
-### Dockerfile snippet
-
-```dockerfile
-FROM nvidia/cuda:12.8.1-cudnn9-devel-ubuntu24.04
-
-ENV TORCH_CUDA_ARCH_LIST="8.9"
-
-RUN pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu128
-```
-
-### Pros / Cons
-
-**Pros**:
-- Large disponibilité sur RunPod
-- cuDNN inclus dans base image (plus simple)
-- Bien testé et stable
-- Support RTX 4090 optimal
-
-**Cons**:
-- Pas de support RTX 5090 (Blackwell)
-- cuDNN 9.9.0 vs 9.10.2 (optimisations manquantes)
-- Triton 3.0.0 vs 3.1.0
-
----
-
-## CUDA 12.6.0 (Legacy - RTX 3000/4000)
-
-**Target GPU**: RTX 4090 (sm_8.9), RTX 3090 (sm_8.6), RTX 3080 (sm_8.6)
-**RunPod Availability**: Large - pods anciens
-**Driver Required**: NVIDIA 550.54.15+
-
-### Stack complet
-
-| Component | Version | Notes |
-|-----------|---------|-------|
-| **Base Image** | `nvidia/cuda:12.6.0-cudnn9-devel-ubuntu22.04` | Ubuntu 22.04 |
-| **cuDNN** | 9.0.0 | Dans base image |
-| **Python** | 3.10 | Ubuntu 22.04 default |
-| **PyTorch** | 2.5.0 | Dernière version stable pour cu126 |
-| **SageAttention** | v1.x (à vérifier) | Support limité |
-| **ComfyUI** | 36357bb | Compatible |
-| **tcmalloc** | 2.10 | Ubuntu 22.04 package |
-
-### Dockerfile snippet
-
-```dockerfile
-FROM nvidia/cuda:12.6.0-cudnn9-devel-ubuntu22.04
-
-ENV TORCH_CUDA_ARCH_LIST="8.6"  # RTX 3090/3080
-
-RUN pip install --no-cache-dir torch==2.5.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu126
-```
-
-### Pros / Cons
-
-**Pros**:
-- Large disponibilité
-- Bien testé
-- Stable pour RTX 3000 series
-
-**Cons**:
-- Pas de support RTX 5090
-- PyTorch 2.5.0 (manque features 2.8.0)
-- Ubuntu 22.04 (older packages)
-- SageAttention support limité
-
----
-
-## GPU Architecture Reference - RunPod Secure Cloud
-
-Table complète des GPU disponibles sur RunPod avec VRAM et tarifs Secure Cloud ($/heure) - **Triés par prix décroissant**.
-
-| GPU Model | VRAM | Architecture | Compute Capability | TORCH_CUDA_ARCH_LIST | CUDA Min | RunPod Price |
-|-----------|------|--------------|-------------------|----------------------|----------|--------------|
-| **B200** | 180GB | Blackwell (datacenter) | sm_12.0 | `"12.0"` | 12.9+ | $5.19/h |
-| **H100 SXM** | 80GB | Hopper (datacenter) | sm_9.0 | `"9.0"` | 12.0+ | $2.69/h |
-| **RTX PRO 6000 Blackwell** | 96GB | Blackwell (pro) | sm_12.0 | `"12.0"` | 12.9+ | $1.84/h |
-| **A100 PCIe** | 80GB | Ampere (datacenter) | sm_8.0 | `"8.0"` | 11.0+ | $1.39/h |
-| **RTX 5090** | 32GB | Blackwell | sm_12.0 | `"12.0"` | 12.9+ | $0.89/h |
-| **RTX 6000 Ada Generation** | 48GB | Ada Lovelace (pro) | sm_8.9 | `"8.9"` | 12.0+ | $0.77/h |
-| **RTX 4090** | 24GB | Ada Lovelace | sm_8.9 | `"8.9"` | 12.0+ | $0.59/h |
-| **RTX 3090** | 24GB | Ampere | sm_8.6 | `"8.6"` | 11.1+ | $0.46/h |
-| **A40** | 48GB | Ampere (datacenter) | sm_8.6 | `"8.6"` | 11.1+ | $0.40/h |
-| **L4** | 24GB | Ada Lovelace | sm_8.9 | `"8.9"` | 12.0+ | $0.39/h |
-
-**Notes**:
-- Prix RunPod Secure Cloud au 2026-01-11 (triés du plus cher au moins cher)
-- GPUs non disponibles sur RunPod : RTX 5080, RTX 4080, RTX 4070 Ti, RTX 3090 Ti, RTX 3080, H200
-- VRAM : capacité totale GPU (GDDR6/GDDR7/HBM2e/HBM3e selon modèle)
-
----
-
-## SageAttention Version History
-
-| Version | Commit | Release Date | sm_12.0 Support | sm_8.9 Support | Notes |
-|---------|--------|--------------|-----------------|----------------|-------|
-| **v2.2.0** | eb615cf | Oct 2025 | Yes | Yes | Blackwell optimization, bug fixes |
-| **v2.1.0** | ? | Sept 2025 | No | Yes | Ada optimization |
-| **v2.0.0** | ? | Aug 2025 | No | Yes | Major refactor |
-| **v1.x** | 68de379 | Jul 2025 | No | Limited | Early version |
-
----
-
-## Switching Between Versions
-
-### Build pour CUDA 12.8 (large RunPod availability)
-
-```bash
-# 1. Modifier Dockerfile
-FROM nvidia/cuda:12.8.1-cudnn9-devel-ubuntu24.04
-ENV TORCH_CUDA_ARCH_LIST="8.9"
-
-# 2. Modifier PyTorch index
-pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu128
-
-# 3. Build
-docker build -t username/pod-comfyui-vscode:cuda128 .
-```
-
-### Build pour CUDA 12.9 (RTX 5090)
-
-```bash
-# 1. Modifier Dockerfile
-FROM nvidia/cuda:12.9.0-devel-ubuntu24.04  # Sans cuDNN
-ENV TORCH_CUDA_ARCH_LIST="12.0"
-
-# 2. Modifier PyTorch index
-pip install --no-cache-dir torch==2.8.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu129
-
-# 3. Build
-docker build -t username/pod-comfyui-vscode:cuda129 .
-```
-
----
-
-## Recommandations par Use Case
-
-### Je veux RTX 5090 performance maximale
-**CUDA 12.9.0** (current config)
-- PyTorch 2.8.0+cu129
-- SageAttention v2.2.0 avec sm_12.0
-- cuDNN 9.10.2 bundled
-
-### Je veux large disponibilité RunPod (RTX 4090)
-**CUDA 12.8.1**
-- PyTorch 2.8.0+cu128
-- SageAttention v2.1.0 (à vérifier) avec sm_8.9
-- Plus de pods disponibles
-
-### Je veux stabilité maximale (RTX 3090/4090)
-**CUDA 12.6.0**
-- PyTorch 2.5.0
-- Bien testé
-- Legacy support
-
----
-
-## Vérifier la version CUDA d'un pod RunPod
-
-```bash
-# Méthode 1 : nvidia-smi
-nvidia-smi
-
-# Méthode 2 : nvcc
-nvcc --version
-
-# Méthode 3 : PyTorch
-python -c "import torch; print(f'CUDA: {torch.version.cuda}')"
-
-# Méthode 4 : version.json
+nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv
+python -c "import torch; print(torch.__version__, torch.version.cuda)"
+python -c "import comfy_kitchen, comfy_aimdo; print('runtime stack OK')"
 cat /usr/local/cuda/version.json
 ```
 
 ---
 
-## TODO / À compléter
-
-[ ] Vérifier SageAttention support pour CUDA 12.8.1
-[ ] Tester build CUDA 12.8.1 sur RTX 4090
-[ ] Ajouter support multi-architecture (sm_8.9 + sm_12.0 dans même image)
-[ ] Créer branches Git par version CUDA
-[ ] Automatiser build matrix (GitHub Actions)
-
----
-
-## Maintenance
-
-**Last updated**: 2026-01-11
-**Current production**: CUDA 12.9.0 (RTX 5090 optimized)
-**Maintainer**: @username
+**Last updated**: 2026-08-04
+**Primary target**: `cu130` — RTX 5090, driver 580+

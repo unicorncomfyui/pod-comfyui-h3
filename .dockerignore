@@ -1,0 +1,26 @@
+# Keep the build context tiny - only what the Dockerfile actually COPYs.
+.git
+.github
+.gitignore
+.gitattributes
+.dockerignore
+
+# Docs never belong in the image.
+*.md
+
+# Secrets must never reach a build layer.
+.env
+.env.*
+!.env.example
+
+# Local artefacts.
+workspace/
+models/*.safetensors
+models/*.pth
+output/
+temp/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+Thumbs.db
