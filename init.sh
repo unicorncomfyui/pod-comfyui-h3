@@ -137,6 +137,17 @@ for mod, label in (
         print(f"[ERROR] {label} missing - H3 will not run correctly ({e})")
 PY
 
+# Triton compiles its kernels JIT, at runtime. torch._native routes ops through
+# it (the H3 text encoder's RoPE hits bmm_outer_product), so a missing compiler
+# does not surface until mid-generation, as a RuntimeError buried in a stack
+# trace. Check it here instead.
+if command -v "${CC:-gcc}" > /dev/null 2>&1; then
+    echo "[OK]   C compiler for Triton JIT: $(command -v "${CC:-gcc}")"
+else
+    echo "[ERROR] No C compiler (${CC:-gcc}) - Triton cannot JIT its kernels."
+    echo "        Generation will fail with 'Failed to find C compiler'."
+fi
+
 echo ""
 echo "=========================================="
 echo "END DIAGNOSTICS"

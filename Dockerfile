@@ -9,9 +9,12 @@
 #   docker build --build-arg CUDA_BASE=12.9.2-cudnn-runtime-ubuntu24.04 \
 #                --build-arg TORCH_INDEX=cu129 .
 #
-# Nothing is compiled from source: comfy-kitchen (kernels) and comfy-aimdo
+# Nothing is compiled AT BUILD TIME: comfy-kitchen (kernels) and comfy-aimdo
 # (dynamic VRAM offloader) ship as prebuilt abi3 wheels, so the image is based
 # on -runtime rather than -devel and needs no SageAttention build step.
+#
+# A C compiler still ships, deliberately: Triton compiles kernels JIT at
+# runtime and fails hard without one. See the note above the gcc install.
 
 ARG CUDA_BASE=13.3.1-cudnn-runtime-ubuntu24.04
 FROM nvidia/cuda:${CUDA_BASE}
@@ -32,6 +35,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     CUDA_HOME=/usr/local/cuda \
+    CC=gcc \
     PATH="/opt/venv/bin:/usr/local/cuda/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" \
     TORCH_CUDA_ARCH_LIST="12.0" \
@@ -127,9 +131,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Strip node git metadata (~1-2 GB) and any bundled weights.
     && find /app/comfyui -name ".git" -type d -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /app/comfyui/custom_nodes \( -name "*.pth" -o -name "*.safetensors" \) -size +50M -delete \
-    # Purge the toolchain inside the same layer.
+    # Purge the build-time toolchain inside the same layer...
     && apt-get purge -y build-essential cmake ninja-build pkg-config \
     && apt-get autoremove -y \
+    # ...but a C compiler MUST survive into the final image. Triton compiles
+    # its kernels JIT, at runtime, not at build time: torch 2.13 routes
+    # torch._native ops (bmm_outer_product, hit by the H3 text encoder's RoPE)
+    # through Triton, which shells out to cc to build driver.c on first use.
+    # Without it the pod loads the model fine and then dies mid-execution with
+    # "Failed to find C compiler". gcc and headers only - not the full
+    # build-essential, which also drags in g++, make and dpkg-dev.
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache/*
 

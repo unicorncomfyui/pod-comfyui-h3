@@ -25,10 +25,16 @@ H3's usable weights total **42.5 GB** (T2V/I2V) to **63.4 GB** (with R2V) agains
 The text encoder ships in **NVFP4**, which needs Blackwell tensor cores — hence
 the RTX 5090 target rather than a cheaper card.
 
-Both packages ship as **prebuilt wheels**, so this image compiles nothing.
-SageAttention, which the previous generation of this pod built from source, is
-gone: its upstream has been idle since January 2026 and H3's int8 layers are not
-FP16/BF16 anyway.
+Both packages ship as **prebuilt wheels**, so nothing is compiled when the image
+is built. SageAttention, which the previous generation of this pod built from
+source, is gone: its upstream has been idle since January 2026 and H3's int8
+layers are not FP16/BF16 anyway.
+
+The image does still carry `gcc`, on purpose. Triton compiles its kernels
+just-in-time *at runtime* — torch 2.13 routes `torch._native` ops through it,
+and the H3 text encoder's RoPE hits one — so a compiler must be present or
+generation dies with `Failed to find C compiler`. Build-time and run-time
+compilation are separate questions; only the first one was eliminated.
 
 ## Quick start
 
@@ -239,6 +245,7 @@ publishing path.
 | Symptom | Cause | Fix |
 |---|---|---|
 | **403 on port 3000, while 8080 works** | ComfyUI rejects `Sec-Fetch-Site: cross-site`, which is what clicking the dashboard link sends | Retype the URL in the address bar, or keep `ENABLE_CORS=true` (default) |
+| `Failed to find C compiler` mid-generation | Triton JIT-compiles kernels at runtime and found no `gcc` | Fixed in the image; if you stripped it, reinstall `gcc libc6-dev` |
 | H3 templates missing | ComfyUI < 0.30.0 | Pull a newer image tag |
 | Model absent from loader | Download incomplete | Check the pod log; re-run with `DOWNLOAD_MODELS=true` |
 | `CUDA error` / driver mismatch at boot | cu130 image on a 12.x host | Redeploy with the CUDA filter, or use `:cu129` |
