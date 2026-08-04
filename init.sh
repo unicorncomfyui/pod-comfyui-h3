@@ -31,11 +31,36 @@ if command -v nvidia-smi &> /dev/null; then
         echo "       This image targets the RTX 5090."
     fi
 
-    # cu130 builds need a 580+ host driver; RunPod still has 575 machines.
+    # A host driver too old for the image's CUDA runtime is fatal, not advisory:
+    # torch reports "CUDA available: False" and every later failure is a
+    # downstream symptom. Abort here rather than let the pod look healthy, boot
+    # ComfyUI, and pull 42 GB of weights it can never execute.
     DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | cut -d. -f1)
-    if [ "${BUILD_TORCH_INDEX}" = "cu130" ] && [ "${DRIVER_MAJOR:-0}" -lt 580 ]; then
-        echo "[ERROR] Host driver is ${DRIVER_MAJOR}.x but this is a CUDA 13 image (needs 580+)."
-        echo "        Redeploy on a CUDA 13 machine, or use the :cu129-* image tag."
+    case "${BUILD_TORCH_INDEX}" in
+        cu130|cu131|cu132) DRIVER_MIN=580 ;;
+        cu129)             DRIVER_MIN=575 ;;
+        *)                 DRIVER_MIN=0   ;;
+    esac
+
+    if [ "${DRIVER_MAJOR:-0}" -lt "$DRIVER_MIN" ]; then
+        echo ""
+        echo "=============================================================="
+        echo "[FATAL] Host driver ${DRIVER_MAJOR}.x is too old for this image."
+        echo ""
+        echo "  image built for : ${BUILD_TORCH_INDEX}  (needs driver ${DRIVER_MIN}+)"
+        echo "  host driver     : ${DRIVER_MAJOR}.x"
+        echo ""
+        echo "  RunPod scheduled this pod on an incompatible machine. In the"
+        echo "  template, under GPU Compatibility > Allowed CUDA versions,"
+        echo "  untick every version below the one this image needs."
+        echo ""
+        echo "  Set ALLOW_DRIVER_MISMATCH=true to boot anyway (CPU only)."
+        echo "=============================================================="
+        echo ""
+        if [ "${ALLOW_DRIVER_MISMATCH:-false}" != "true" ]; then
+            exit 1
+        fi
+        echo "[WARN] ALLOW_DRIVER_MISMATCH=true - continuing without a usable GPU"
     fi
 else
     echo "[ERROR] nvidia-smi not found"
@@ -118,65 +143,5 @@ echo "END DIAGNOSTICS"
 echo "=========================================="
 echo ""
 
-# ---------------------------------------------------------------------------
-# Model weights
-# ---------------------------------------------------------------------------
-if [ "${DOWNLOAD_MODELS:-true}" != "true" ]; then
-    echo "[SKIP] Model download disabled (DOWNLOAD_MODELS=false)"
-elif [ -z "${COMFYUI_DIR}" ]; then
-    echo "[SKIP] COMFYUI_DIR not set - skipping model download"
-elif [ "${NETWORK_VOLUME}" != "true" ]; then
-    # 63 GB of weights will not fit in container storage.
-    echo "[SKIP] No network volume detected - skipping model download."
-    echo "       MiniMax H3 needs up to 63 GB; attach a network volume."
-else
-    echo "Fetching model weights (MODEL_SETS=${MODEL_SETS:-default})..."
-    python /app/scripts/download_models.py || echo "[WARN] Model download reported errors"
-fi
-
-# ---------------------------------------------------------------------------
-# Optional page-cache warm-up.
-#
-# On a RunPod network volume, reads are network-bound and RunPod rates their
-# throughput as "variable". Left alone, those 42 GB stream in during the first
-# generation, as unpredictable stalls mid-sampling. Reading them once up front
-# moves that cost to boot, where it is visible in the log, and subsequent
-# faults are served from RAM.
-#
-# Name ONE set: prewarming more than fits in RAM just evicts itself.
-# ---------------------------------------------------------------------------
-if [ -n "${PREWARM_SET}" ] && [ -n "${COMFYUI_DIR}" ]; then
-    echo ""
-    echo "Warming page cache for '${PREWARM_SET}'..."
-    PREWARM_LIST=$(mktemp)
-    python /app/scripts/download_models.py --list "${PREWARM_SET}" > "$PREWARM_LIST" 2>/dev/null || true
-
-    if [ ! -s "$PREWARM_LIST" ]; then
-        echo "[WARN] Nothing to prewarm - set unknown, or its files are not downloaded yet"
-    else
-        # Read line-by-line rather than word-splitting, so a path containing a
-        # space cannot silently turn into two bogus paths.
-        PREWARM_BYTES=0
-        while IFS= read -r f; do
-            SZ=$(stat -c %s "$f" 2>/dev/null || echo 0)
-            PREWARM_BYTES=$(( PREWARM_BYTES + SZ ))
-        done < "$PREWARM_LIST"
-        PREWARM_GB=$(( PREWARM_BYTES / 1000000000 ))
-
-        AVAIL_GB=$(free -g | awk '/^Mem:/{print $7}')   # "available", not "free"
-        if [ "${AVAIL_GB:-0}" -lt "$PREWARM_GB" ]; then
-            echo "[SKIP] Needs ${PREWARM_GB} GB but only ${AVAIL_GB} GB available - would thrash"
-        else
-            START=$(date +%s)
-            while IFS= read -r f; do
-                cat "$f" > /dev/null 2>&1 || true
-            done < "$PREWARM_LIST"
-            echo "[OK]   ${PREWARM_GB} GB cached in $(( $(date +%s) - START ))s"
-        fi
-    fi
-    rm -f "$PREWARM_LIST"
-fi
-
-echo ""
-echo "[OK] Initialization completed"
+echo "[OK] Diagnostics completed"
 exit 0

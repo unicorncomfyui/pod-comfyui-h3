@@ -147,13 +147,13 @@ RUN mkdir -p /app/comfyui/models/upscale_models \
 
 COPY models/manifest.json /app/models/manifest.json
 COPY scripts/download_models.py /app/scripts/download_models.py
-COPY init.sh start.sh /app/
+COPY init.sh start.sh fetch_models.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
 COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.json
 
 # Normalise line endings in case of a checkout from Windows.
-RUN sed -i 's/\r$//' /app/init.sh /app/start.sh \
-    && chmod +x /app/init.sh /app/start.sh
+RUN sed -i 's/\r$//' /app/init.sh /app/start.sh /app/fetch_models.sh \
+    && chmod +x /app/init.sh /app/start.sh /app/fetch_models.sh
 
 EXPOSE 8080 3000 22
 

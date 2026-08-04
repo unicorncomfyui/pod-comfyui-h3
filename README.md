@@ -52,7 +52,13 @@ defaults to `false` (see [Host RAM](#host-ram-is-the-real-constraint)).
 3. **100 GB of persistent storage at `/workspace`** — the weights live there,
    not in the image. See the trade-off below.
 4. Image: `vlop12ui/pod-comfyui-h3:latest`
-5. Under *Additional filters → CUDA Versions*, select **13.0+**
+5. **Allowed CUDA versions: 13.0, 13.1, 13.2, 13.3 only.** Untick 12.x.
+
+> This one is not optional. Leaving 12.8/12.9 ticked lets RunPod schedule the
+> pod on a machine whose driver cannot run a CUDA 13 image; torch then reports
+> `CUDA available: False` and nothing works. Switching to `:cu129` does not
+> rescue it either — a driver capped at CUDA 12.8 is a 570.x, and cu129 wants
+> 575+. Verified the hard way on 2026-08-04.
 
 #### Volume disk or network volume?
 
@@ -90,9 +96,16 @@ outputs and inputs. Go to 150 GB if you generate heavily or keep raw footage.
 - **ComfyUI**: `https://<pod-id>-3000.proxy.runpod.net`
 - **VSCode**: `https://<pod-id>-8080.proxy.runpod.net`
 
-First boot downloads 42–63 GB of weights. Watch the pod log; ComfyUI is up
-before the download finishes, but H3 will not appear in the loaders until it
-completes.
+First boot downloads 42–63 GB of weights. That happens **in the background**,
+after code-server and ComfyUI are already listening — so you get a shell and a
+UI immediately rather than waiting 15+ minutes blind. Follow it with
+`tail -f /var/log/models.log`. H3 appears in the loaders as each file lands,
+on the next UI refresh.
+
+If the host driver is too old for the image's CUDA runtime, the pod stops at
+diagnostics with a `[FATAL]` block instead of booting and failing obscurely
+later. That is almost always the *Allowed CUDA versions* filter in the template
+being too permissive — see below.
 
 ### 3. Generate
 

@@ -66,9 +66,13 @@ echo "[OK] extra_model_paths.yaml written to $DATA_DIR"
 # The downloader writes to <COMFYUI_DIR>/models, so it must point at the volume.
 export COMFYUI_DIR="$DATA_DIR"
 
-echo "Running initialization..."
+# Diagnostics only - seconds, not minutes. Model acquisition is deliberately
+# NOT here: it runs in the background once the services are listening. A fatal
+# verdict (driver too old for this image's CUDA runtime) stops the pod here,
+# instead of letting it look healthy and fail obscurely later.
+echo "Running diagnostics..."
 if ! bash /app/init.sh; then
-    echo "[ERROR] Initialization failed"
+    echo "[ERROR] Diagnostics failed - refusing to start. See the [FATAL] block above."
     exit 1
 fi
 
@@ -140,6 +144,14 @@ echo "Starting ComfyUI on port ${COMFYUI_PORT}..."
 echo "     args: ${COMFYUI_ARGS[*]}"
 start_comfyui
 echo "[OK] ComfyUI started (PID: $COMFYUI_PID)"
+
+# Weights land in the background, so a fresh volume no longer costs 15+ minutes
+# of blind waiting. Progress goes to the pod log and to /var/log/models.log;
+# ComfyUI lists each model as its file arrives, on the next UI refresh.
+bash /app/fetch_models.sh 2>&1 | tee /var/log/models.log &
+MODELS_PID=$!
+echo "[OK] Model acquisition running in background (PID: $MODELS_PID)"
+echo "     follow with: tail -f /var/log/models.log"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
