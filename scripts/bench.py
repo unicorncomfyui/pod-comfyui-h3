@@ -95,6 +95,42 @@ def force_seed(workflow: dict, seed: int) -> int:
     return n
 
 
+def set_input(workflow: dict, name: str, value) -> int:
+    """Set every widget called `name` across the workflow.
+
+    Values that are lists are node links, not widgets - never overwrite those.
+    """
+    n = 0
+    for node in workflow.values():
+        inputs = node.get("inputs", {})
+        if name in inputs and not isinstance(inputs[name], list):
+            current = inputs[name]
+            inputs[name] = type(current)(value) if current is not None else value
+            n += 1
+    return n
+
+
+def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
+    """'steps=8,12,20' -> ('steps', [8, 12, 20]), numbers kept numeric."""
+    out = []
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(f"--sweep expects NAME=v1,v2,...  (got {spec!r})")
+        name, raw = spec.split("=", 1)
+        values = []
+        for v in raw.split(","):
+            v = v.strip()
+            try:
+                values.append(int(v))
+            except ValueError:
+                try:
+                    values.append(float(v))
+                except ValueError:
+                    values.append(v)
+        out.append((name.strip(), values))
+    return out
+
+
 def run_prompt(workflow: dict) -> float | None:
     """Queue one prompt and return ComfyUI's own execution time in seconds."""
     prompt_id = api("/prompt", {"prompt": workflow})["prompt_id"]
@@ -128,7 +164,48 @@ def run_prompt(workflow: dict) -> float | None:
         return None
 
 
-def bench_config(label: str, extra: list[str], workflow: dict, reps: int) -> dict:
+def sweep_in_instance(workflow: dict, sweeps: list[tuple[str, list]],
+                      reps: int) -> list[dict]:
+    """Sweep workflow parameters inside ONE running ComfyUI.
+
+    Deliberately not one instance per point: parameter sweeps do not change
+    the command line, so reloading the models for every combination would add
+    minutes per point and buy nothing.
+    """
+    import itertools
+
+    names = [n for n, _ in sweeps]
+    rows = []
+    for combo in itertools.product(*[v for _, v in sweeps]):
+        wf = json.loads(json.dumps(workflow))  # deep copy per point
+        label_parts, applied = [], True
+        for name, value in zip(names, combo):
+            hits = set_input(wf, name, value)
+            if hits == 0:
+                log(f"[WARN] No widget named '{name}' in this workflow - skipping")
+                applied = False
+            label_parts.append(f"{name}={value}")
+        label = " ".join(label_parts)
+        if not applied:
+            rows.append({"label": label, "times": [], "error": "input not found"})
+            continue
+
+        log(f"\n--- {label} ---")
+        times = []
+        for i in range(reps + 1):
+            t = run_prompt(wf)
+            if t is None:
+                break
+            log(f"  {'warmup' if i == 0 else f'run {i}':>8}: {t:7.2f} s"
+                + ("   (discarded)" if i == 0 else ""))
+            if i > 0:
+                times.append(t)
+        rows.append({"label": label, "times": times})
+    return rows
+
+
+def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
+                 sweeps: list[tuple[str, list]] | None = None):
     cmd = [
         sys.executable, "main.py",
         "--listen", "127.0.0.1",
@@ -150,7 +227,11 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int) -> dic
     )
     try:
         if not wait_ready(proc):
-            return {"label": label, "times": [], "error": "startup failed"}
+            fail = {"label": label, "times": [], "error": "startup failed"}
+            return [fail] if sweeps else fail
+
+        if sweeps:
+            return sweep_in_instance(workflow, sweeps, reps)
 
         times: list[float] = []
         # +1: the first run pays model staging and any cold Triton kernels.
@@ -180,6 +261,9 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--config", action="append", dest="configs",
                    help="config name, repeatable; default is all of them")
+    p.add_argument("--sweep", action="append",
+                   help="NAME=v1,v2,... sweep a workflow widget; repeatable. "
+                        "e.g. --sweep steps=8,12,20 --sweep megapixels=0.3,0.6,1.0")
     p.add_argument("--list", action="store_true", help="list configs and exit")
     args = p.parse_args()
 
@@ -196,15 +280,29 @@ def main() -> int:
 
     log(f"Pinned {force_seed(workflow, args.seed)} seed widget(s) to {args.seed}")
 
-    names = args.configs or list(CONFIGS)
-    unknown = [n for n in names if n not in CONFIGS]
-    if unknown:
-        log(f"[ERROR] Unknown config(s): {', '.join(unknown)}")
-        return 1
-    if "baseline" not in names:
-        names.insert(0, "baseline")
-
-    results = [bench_config(n, CONFIGS[n], workflow, args.reps) for n in names]
+    if args.sweep:
+        # Sweeping parameters shares one instance; sweeping CLI levers cannot.
+        try:
+            sweeps = parse_sweep(args.sweep)
+        except ValueError as e:
+            log(f"[ERROR] {e}")
+            return 1
+        total = 1
+        for _, v in sweeps:
+            total *= len(v)
+        log(f"Sweeping {' x '.join(f'{n}({len(v)})' for n, v in sweeps)} "
+            f"= {total} point(s), {args.reps} run(s) each")
+        results = bench_config("sweep", CONFIGS[args.configs[0]] if args.configs
+                               else [], workflow, args.reps, sweeps=sweeps)
+    else:
+        names = args.configs or list(CONFIGS)
+        unknown = [n for n in names if n not in CONFIGS]
+        if unknown:
+            log(f"[ERROR] Unknown config(s): {', '.join(unknown)}")
+            return 1
+        if "baseline" not in names:
+            names.insert(0, "baseline")
+        results = [bench_config(n, CONFIGS[n], workflow, args.reps) for n in names]
 
     log(f"\n{'=' * 62}\nRESULTS  ({args.reps} runs each, warm-up discarded)\n{'=' * 62}")
     log(f"{'config':<12} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}  vs base")

@@ -245,6 +245,42 @@ What it does, and why:
 
 Each configuration reloads the models, so a full sweep is slow. Start with
 `--config fp16 --config lru` rather than all nine.
+
+### Finding your resolution / steps sweet spot
+
+There is no published curve for H3 — the model is days old. But part of the
+question has a structural answer.
+
+**H3's native canvas is 768 px on the short edge, capped at 768×1344, rounded
+to a multiple of 32** — about 1.0 megapixel at 16:9. That is where the model
+learned. Above it, upstream is blunt: extra pixels *"may add pixels without
+adding equivalent learned detail"*. The advertised 2K comes from in-model
+regeneration, not from a bigger canvas.
+
+So the ceiling worth paying for is **1344×768**. Beyond that, generate at
+native and use a real upscaler — `4x-UltraSharp` ships in the image.
+
+For steps, the templates offer two presets: **12** (speed) and **20** (quality).
+
+And the budget that actually governs cost is **pixels × frames**, not resolution
+alone. A duration change moves it as much as a resolution change — which is
+exactly what produced 2.57 s and 8.07 s per step on identical model staging here.
+
+To measure your own curve:
+
+```bash
+python /app/scripts/bench.py wf_api.json --sweep steps=8,12,16,20
+python /app/scripts/bench.py wf_api.json --sweep megapixels=0.25,0.5,0.75,1.0
+python /app/scripts/bench.py wf_api.json --sweep steps=12,20 --sweep megapixels=0.5,1.0
+```
+
+`--sweep` sets every widget of that name across the workflow and runs the full
+cartesian product. Unlike `--config`, it reuses a **single** ComfyUI instance —
+changing a widget does not change the command line, so reloading 40 GB of models
+per point would cost minutes and prove nothing.
+
+Time is all this measures. Quality is yours to judge: keep the seed fixed, watch
+the outputs side by side, and find where more steps stop being visible.
 | `VRAM_HEADROOM` | — | Extra GB kept free; raise on OOM mid-sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Appended verbatim to the ComfyUI command line |
 
