@@ -209,6 +209,19 @@ identical models and step count, differed 3× per step — so on a light workflo
 overhead was 29% of the total, and on a heavy one about 11%. Tune the half that
 is actually large for *your* workflow.
 
+**Before tuning anything, settle whether this is compute-bound at all.** A
+third-party accelerator skips 30–35% of transformer evaluations for 2.6% of
+wall-clock, which points at the ~40.5 GB crossing PCIe per run rather than at
+the maths. One bench run decides it:
+
+```bash
+python /app/scripts/bench.py wf.json --config fp16 --config offload4 --config offload8
+```
+
+If `offload*` moves and `fp16` does not, `--fast` is the wrong place to spend
+effort — and the real lever becomes a card that does not need to offload at all.
+See [VERSIONS.md §11](VERSIONS.md) for the full survey and the dead ends.
+
 `--fast` features are labelled untested and potentially quality-deteriorating
 upstream. Judge the output, not only the clock.
 
@@ -356,5 +369,14 @@ publishing path.
 
 ## License
 
-AGPL-3.0 (inherited from ComfyUI). MiniMax H3 weights are covered by the
-MiniMax Community License — check its terms before commercial use.
+AGPL-3.0 (inherited from ComfyUI).
+
+**MiniMax H3 weights are a separate matter, and possibly a restrictive one.**
+They ship under the MiniMax Community License. A
+[HuggingFace discussion](https://huggingface.co/Comfy-Org/MiniMax-H3/discussions/11)
+reports that the licence grants no rights to users in the **EU, US, UK and South
+Korea** owing to ongoing litigation — and that this is what has prevented
+distilled speed-up variants from being published.
+
+That is a user report, not something verified against the licence text here.
+Read the licence yourself before relying on H3 output commercially.

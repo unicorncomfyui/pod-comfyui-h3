@@ -168,6 +168,91 @@ Les principales :
 | `VRAM_HEADROOM` | — | GB gardés libres ; à augmenter en cas d'OOM en cours de sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Ajouté tel quel à la ligne de commande ComfyUI |
 
+| `CACHE_LRU` | — | `--cache-lru N` : évite de ré-encoder un prompt inchangé |
+| `FAST_MODE` | — | Features `--fast` de ComfyUI, ou `all` |
+| `ASYNC_OFFLOAD_STREAMS` | `2` | Streams d'offload des poids |
+
+### Régler la vitesse de génération
+
+Sur un run mesuré, 12 steps ont pris 43,26 s dont ~30,8 s de sampling — les
+**~12,5 s restantes sont de l'overhead**, et le log en donne la cause : le text
+encoder de 15 GB est re-stagé à **chaque** prompt, même quand le texte n'a pas
+changé.
+
+| Overhead | Sampling |
+|---|---|
+| `CACHE_LRU=10` — réutilise le conditionnement | `FAST_MODE=fp16_accumulation` |
+| `PREWARM_SET` — I/O du premier chargement | `FAST_MODE=cublas_ops` |
+| `ASYNC_OFFLOAD_STREAMS=4` — ~40 GB par run sur PCIe | `FAST_MODE=autotune` |
+
+Laquelle des deux moitiés domine dépend entièrement du workflow : sur un run
+léger l'overhead pesait 29 % du total, sur un lourd environ 11 %.
+
+**Avant de régler quoi que ce soit, détermine si c'est seulement compute-bound.**
+Un accélérateur tiers supprime 30-35 % des évaluations du transformer pour 2,6 %
+de temps réel — ce qui désigne les ~40,5 GB qui traversent le PCIe à chaque run,
+pas le calcul. Un run de banc tranche :
+
+```bash
+python /app/scripts/bench.py wf.json --config fp16 --config offload4 --config offload8
+```
+
+Si `offload*` bouge et pas `fp16`, `--fast` est le mauvais endroit où investir —
+et le vrai levier devient une carte qui n'a pas besoin d'offloader du tout. Le
+panorama complet et les impasses vérifiées sont dans [VERSIONS.md §11](VERSIONS.md).
+
+### Banc de test
+
+Comparer deux générations à l'œil ne prouve rien : le temps par step sur ce pod
+a été mesuré à 0,85 s, 2,57 s et 8,07 s — un facteur 9,5 dû uniquement aux
+réglages du workflow. [`scripts/bench.py`](scripts/bench.py) supprime cette
+variance.
+
+```bash
+python /app/scripts/bench.py mon_workflow_api.json --config fp16 --config lru
+python /app/scripts/bench.py mon_workflow_api.json --sweep steps=8,12,16,20
+python /app/scripts/bench.py --list
+```
+
+Exporte le workflow avec **Export (API)** — le format de sauvegarde normal est
+refusé par `/prompt`.
+
+Il lance ses propres instances ComfyUI sur le port 3111 (les leviers sont des
+arguments CLI, et le watchdog de `start.sh` relancerait ton instance avec ses
+arguments d'origine), épingle tous les widgets `seed`, chronomètre depuis
+l'historique ComfyUI plutôt qu'autour de l'appel HTTP, jette le premier run de
+chaque configuration, et désactive custom nodes et previews.
+
+**Lis toujours le `spread` avant de croire un delta** : s'il dépasse l'écart
+entre deux configs, tu as mesuré du bruit.
+
+### Résolution et steps : où est le point d'équilibre ?
+
+Aucune courbe n'est publiée — le modèle a quelques jours. Mais une partie de la
+question a une réponse structurelle.
+
+**Le canvas natif de H3 est de 768 px de petit côté, plafonné à 768×1344,
+arrondi au multiple de 32** — soit ~1,0 mégapixel en 16:9. C'est là que le
+modèle a appris. Au-dessus, la doc amont est nette : les pixels supplémentaires
+*« may add pixels without adding equivalent learned detail »*. Le 2K annoncé
+vient d'une régénération interne, pas d'un canvas plus grand.
+
+Le plafond qui vaut d'être payé est donc **1344×768**. Au-delà, génère en natif
+puis passe un vrai upscaler — `4x-UltraSharp` est dans l'image.
+
+Pour les steps, deux presets : **12** (vitesse) et **20** (qualité).
+
+Et le budget qui gouverne réellement le coût est **pixels × frames**, pas la
+résolution seule. C'est ce qui a produit 2,57 s et 8,07 s par step ici, avec un
+staging de modèles identique.
+
+`--sweep` réutilise **une seule** instance ComfyUI : changer un widget ne change
+pas la ligne de commande, recharger 40 GB par point ne prouverait rien.
+
+Le banc ne mesure que le **temps**. Le second axe — à partir de quand des steps
+supplémentaires cessent de se voir — reste à ton œil : seed fixe, sorties côte
+à côte.
+
 ### Ajouter un modèle
 
 Ajouter une entrée dans [models/manifest.json](models/manifest.json) et la
@@ -242,5 +327,16 @@ n'est pas le chemin de publication.
 
 ## Licence
 
-AGPL-3.0 (héritée de ComfyUI). Les poids MiniMax H3 relèvent de la MiniMax
-Community License — en vérifier les termes avant tout usage commercial.
+AGPL-3.0 (héritée de ComfyUI).
+
+**Les poids MiniMax H3 sont un sujet distinct, et potentiellement restrictif.**
+Ils sont publiés sous MiniMax Community License. Une
+[discussion HuggingFace](https://huggingface.co/Comfy-Org/MiniMax-H3/discussions/11)
+rapporte que cette licence n'accorderait **aucun droit aux utilisateurs de l'UE,
+des États-Unis, du Royaume-Uni et de Corée du Sud** en raison d'un litige en
+cours — et que c'est précisément ce qui empêche la publication de variantes
+distillées accélérées.
+
+Il s'agit d'un rapport d'utilisateur, non vérifié ici contre le texte de la
+licence. **Lis-la toi-même avant tout usage commercial de sorties H3** — la
+France est dans le périmètre concerné.

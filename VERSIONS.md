@@ -293,5 +293,78 @@ image builds clean, boots clean, loads the model, and only then fails.
 
 ---
 
+## 11. Optimisation landscape
+
+Surveyed 2026-08-04, days after the weights shipped. Recorded so the next person
+does not re-derive it — and so the dead ends stay dead.
+
+### The open question: compute-bound or memory-bound?
+
+[Spectrum-MiniMax-H3](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3)
+skips 30–35% of transformer evaluations and reports **2.6%** of wall-clock
+improvement. Removing a third of the compute for 2.6% suggests compute is not
+the constraint — plausibly the ~40.5 GB crossing PCIe on every run is.
+
+Treat that as a hypothesis, not a finding: the 2.6% came from a 0.5 MP test, and
+a ROCm user reported 24.3% on a different workflow.
+
+It is directly falsifiable with the bench in this repo:
+
+```bash
+python /app/scripts/bench.py wf.json --config fp16 --config offload4 --config offload8
+```
+
+- `fp16` wins, `offload*` flat → compute-bound; pursue `--fast`
+- `offload*` wins, `fp16` flat → memory-bound; the useful lever is hardware
+
+The answer decides whether an RTX PRO 6000 is worth it. It holds 96 GB, so all
+40.5 GB stay resident and offloading disappears entirely. On RunPod it costs
+1.86× an RTX 5090 ($1.84 vs $0.99/h) while being only 10–15% faster on raw
+compute — so it pays for itself only if eliminating offload beats 1.86×.
+
+### Levers that exist
+
+| Lever | Where | Note |
+|---|---|---|
+| Frames × pixels | workflow | The real budget. Native canvas caps at 1344×768 |
+| 20 → 12 steps | workflow | The two template presets |
+| `ASYNC_OFFLOAD_STREAMS` | env | Targets the suspected bottleneck |
+| `CACHE_LRU` | env | Drops the 15 GB text-encoder re-stage per prompt |
+| `FAST_MODE` | env | Compute-side; expect little if memory-bound |
+| `TRITON_CACHE_DIR` | automatic | ~35 s per pod restart |
+
+### Dead ends, verified
+
+- **`minimax-h3-cache-v1` / `minimax-h3-velocity-cache-v1`** — quoted in
+  third-party guides as sampler acceleration settings. Present in **neither
+  v0.30.0 nor master**. They describe MiniMax's cloud API node, not local
+  generation.
+- **No 4-step speedup LoRA**, and it is blocked by licensing rather than by
+  engineering — see below.
+- **MagCache, TeaCache, WaveSpeed** — last updated in 2025, all predate H3.
+  No H3 support without adaptation.
+- **EasyCache** — reported working with H3 (10 s clip in 2 min at 15 steps) but
+  it is *not* in KJNodes, so it is not in this image.
+
+### Licensing — check before relying on this
+
+A [HuggingFace discussion](https://huggingface.co/Comfy-Org/MiniMax-H3/discussions/11)
+reports that the MiniMax licence grants no rights to users in the **EU, US, UK
+and South Korea** because of ongoing litigation, and that this is what stops
+LightX2V and others from publishing distilled variants.
+
+This is a user report, not verified against the licence text. It matters twice
+over: it explains why no speedup LoRA exists, and it may bear on commercial use
+of H3 output. Read the licence before building on it.
+
+### Worth watching
+
+[ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) — kijai authored the
+int8-convrot support in ComfyUI 0.30 itself, and the repo is updated near-daily.
+H3-specific optimisations will most likely land there first. It is already in
+this image.
+
+---
+
 **Last updated**: 2026-08-04
 **Primary target**: `cu130` — RTX 5090, driver 580+
