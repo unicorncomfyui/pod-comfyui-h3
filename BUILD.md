@@ -82,12 +82,24 @@ from the dropdown. Useful when only the fallback needs a rebuild.
 
 ## Caching
 
-Each matrix leg uses its own GitHub Actions cache scope
-(`cache-to: type=gha,scope=<target>`). Sharing one scope would make the two legs
-evict each other on every run, and neither would ever hit.
+Layers are cached **in the registry**, not in the GitHub Actions cache:
 
-GitHub caps Actions cache at 10 GB per repository; expect partial hits on the
-heavy PyTorch layer. A cold build is ~25–30 min, a warm one closer to 10.
+```yaml
+cache-from: type=registry,ref=<image>:buildcache-<target>
+cache-to:   type=registry,ref=<image>:buildcache-<target>,mode=max
+```
+
+`type=gha` is the obvious choice and the wrong one here. The Actions cache is
+capped at **10 GB per repository**, while this image's layers come to ~15 GB per
+target. Two targets against a shared 10 GB budget evict each other on every run
+and never produce a hit — while still paying the export cost in time and disk.
+Docker Hub has no such cap, and the workflow is already authenticated there.
+
+This creates two extra tags, `buildcache-cu130` and `buildcache-cu129`. They
+hold layer blobs, not runnable images — ignore them when picking a tag to
+deploy.
+
+A cold build is ~25–30 min, a warm one closer to 10.
 
 ## Disk space on the runner
 

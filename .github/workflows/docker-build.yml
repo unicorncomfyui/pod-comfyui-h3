@@ -118,9 +118,14 @@ jobs:
           build-args: |
             CUDA_BASE=${{ matrix.cuda_base }}
             TORCH_INDEX=${{ matrix.torch_index }}
-          # Scoped per target, otherwise the two matrix legs evict each other.
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+          # Registry cache, not type=gha: the GitHub Actions cache is capped at
+          # 10 GB per repository, and this image's layers run to ~15 GB per
+          # target. Two targets against a shared 10 GB budget would evict each
+          # other every run and never produce a hit. Docker Hub has no such cap
+          # and we are already authenticated against it.
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache-${{ matrix.target }}
+          # Skipped on pull requests, which never log in to the registry.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache-{1},mode=max', env.IMAGE_NAME, matrix.target) || '' }}
 
       - name: Summary
         if: steps.gate.outputs.run == 'true'
