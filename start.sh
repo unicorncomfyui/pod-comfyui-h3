@@ -114,6 +114,17 @@ COMFYUI_ARGS=(
     --preview-method "${PREVIEW_METHOD:-auto}"
 )
 
+# ComfyUI rejects any request carrying "Sec-Fetch-Site: cross-site" with a 403
+# (server.py, create_origin_only_middleware). That is anti-CSRF protection for a
+# localhost install, but behind the RunPod proxy it fires on the normal workflow
+# - clicking the port link from the dashboard is, by definition, cross-site.
+# --enable-cors-header REPLACES that middleware rather than adding to it.
+# Pin CORS_ALLOW_ORIGIN to your pod URL to narrow it; "*" trades the CSRF
+# protection for the dashboard link working.
+if [ "${ENABLE_CORS:-true}" = "true" ]; then
+    COMFYUI_ARGS+=(--enable-cors-header "${CORS_ALLOW_ORIGIN:-*}")
+fi
+
 [ "${FAST_DISK:-false}" = "true" ] && COMFYUI_ARGS+=(--fast-disk)
 [ -n "${VRAM_HEADROOM}" ] && COMFYUI_ARGS+=(--vram-headroom "${VRAM_HEADROOM}")
 [ -n "${RESERVE_VRAM}" ] && COMFYUI_ARGS+=(--reserve-vram "${RESERVE_VRAM}")

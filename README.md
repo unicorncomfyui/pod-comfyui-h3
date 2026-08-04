@@ -238,6 +238,7 @@ publishing path.
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| **403 on port 3000, while 8080 works** | ComfyUI rejects `Sec-Fetch-Site: cross-site`, which is what clicking the dashboard link sends | Retype the URL in the address bar, or keep `ENABLE_CORS=true` (default) |
 | H3 templates missing | ComfyUI < 0.30.0 | Pull a newer image tag |
 | Model absent from loader | Download incomplete | Check the pod log; re-run with `DOWNLOAD_MODELS=true` |
 | `CUDA error` / driver mismatch at boot | cu130 image on a 12.x host | Redeploy with the CUDA filter, or use `:cu129` |
