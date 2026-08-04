@@ -228,5 +228,27 @@ cat /usr/local/cuda/version.json
 
 ---
 
+## 9. Build status
+
+First green build: 2026-08-04, commit `d808b36`, branch `develop`.
+
+| Target | Build | Image (compressed) |
+|---|---|---|
+| `cu130` | 11.8 min | 6.27 GB |
+| `cu129` | 15.2 min | 8.46 GB |
+
+Proven by that build: pip resolves torch 2.13.0 on the pinned CUDA index without
+being clobbered by ComfyUI's unpinned `torch` requirement; ComfyUI 0.30.0
+installs against transformers 5.x; the six custom nodes install under Python
+3.13; nothing needs a compiler, so the `-runtime` base holds; Trivy reports no
+CRITICAL/HIGH findings.
+
+**Not proven**: nothing has run on a GPU yet. Whether comfy-kitchen's NVFP4 path
+engages on real sm_120 hardware, whether comfy-aimdo keeps a 42.5 GB working set
+inside 32 GB of VRAM, and end-to-end H3 generation all remain untested until a
+pod is deployed.
+
+---
+
 **Last updated**: 2026-08-04
 **Primary target**: `cu130` — RTX 5090, driver 580+

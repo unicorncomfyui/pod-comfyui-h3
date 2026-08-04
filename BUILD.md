@@ -99,7 +99,15 @@ This creates two extra tags, `buildcache-cu130` and `buildcache-cu129`. They
 hold layer blobs, not runnable images — ignore them when picking a tag to
 deploy.
 
-A cold build is ~25–30 min, a warm one closer to 10.
+Measured on the first cold build (no cache at all):
+
+| Target | Build time | Published image |
+|---|---|---|
+| `cu130` | 11.8 min | 6.27 GB compressed |
+| `cu129` | 15.2 min | 8.46 GB compressed |
+
+cu130 is the lighter of the two: the CUDA 13.3 base is 2.11 GB against 2.94 GB
+for 12.9.2.
 
 ## Disk space on the runner
 

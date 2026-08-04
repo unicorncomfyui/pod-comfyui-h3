@@ -136,7 +136,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------------------------------------------------------------------------
 # Layer 3 - upscaler, configs and entrypoint scripts.
 # Model weights are NOT baked in: 63 GB of H3 lands on the network volume at
-# first boot, which keeps the published image around 12 GB.
+# first boot. Measured result: 6.27 GB compressed for cu130, 8.46 GB for cu129.
 # ---------------------------------------------------------------------------
 RUN mkdir -p /app/comfyui/models/upscale_models \
              /app/comfyui/user/default/workflows \
