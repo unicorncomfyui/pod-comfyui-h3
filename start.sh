@@ -133,6 +133,30 @@ if [ "${ENABLE_CORS:-true}" = "true" ]; then
     COMFYUI_ARGS+=(--enable-cors-header "${CORS_ALLOW_ORIGIN:-*}")
 fi
 
+# --- Performance levers, all opt-in and A/B testable without a rebuild ------
+#
+# CACHE_LRU: keep N node results. The log shows the 15 GB text encoder being
+# re-staged on every prompt even when the text has not changed; caching the
+# conditioning skips that entirely on repeat runs. Cheap here - the host has
+# far more RAM than the working set.
+[ -n "${CACHE_LRU}" ] && COMFYUI_ARGS+=(--cache-lru "${CACHE_LRU}")
+
+# FAST_MODE: ComfyUI's --fast. Valid values are a space-separated subset of
+# fp16_accumulation, fp8_matrix_mult, cublas_ops, autotune - or "all" for every
+# one. Upstream calls these "untested and potentially quality deteriorating",
+# so change one at a time and compare output, not just wall-clock.
+if [ -n "${FAST_MODE}" ]; then
+    if [ "${FAST_MODE}" = "all" ]; then
+        COMFYUI_ARGS+=(--fast)
+    else
+        COMFYUI_ARGS+=(--fast ${FAST_MODE})
+    fi
+fi
+
+# ASYNC_OFFLOAD_STREAMS: defaults to 2. A single run stages ~40 GB across
+# PCIe, so offload bandwidth is a plausible bottleneck worth probing.
+[ -n "${ASYNC_OFFLOAD_STREAMS}" ] && COMFYUI_ARGS+=(--async-offload "${ASYNC_OFFLOAD_STREAMS}")
+
 [ "${FAST_DISK:-false}" = "true" ] && COMFYUI_ARGS+=(--fast-disk)
 [ -n "${VRAM_HEADROOM}" ] && COMFYUI_ARGS+=(--vram-headroom "${VRAM_HEADROOM}")
 [ -n "${RESERVE_VRAM}" ] && COMFYUI_ARGS+=(--reserve-vram "${RESERVE_VRAM}")

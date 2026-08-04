@@ -186,6 +186,31 @@ The ones that matter:
 | `DOWNLOAD_MODELS` | `true` | Set `false` to boot without fetching weights |
 | `FAST_DISK` | `false` | Trade host RAM for disk when offloading — only worth it on a RAM-starved pod |
 | `PREWARM_SET` | — | Read one set into the page cache at boot. Recommended on a network volume |
+| `CACHE_LRU` | — | Keep N node results; skips re-encoding an unchanged prompt |
+| `FAST_MODE` | — | ComfyUI `--fast` features, or `all` |
+| `ASYNC_OFFLOAD_STREAMS` | 2 | Weight-offload streams |
+
+### Tuning generation speed
+
+On a measured run, 12 steps took 43.26 s of which ~30.8 s was sampling — the
+other **~12.5 s was overhead**, and the log shows why: the 15 GB text encoder is
+re-staged on *every* prompt, even when the text is unchanged.
+
+Attack the two halves separately:
+
+| Overhead (~29%) | Sampling (~71%) |
+|---|---|
+| `CACHE_LRU=10` — reuse the conditioning | `FAST_MODE=fp16_accumulation` |
+| `PREWARM_SET` — first-load I/O | `FAST_MODE=cublas_ops` |
+| `ASYNC_OFFLOAD_STREAMS=4` — ~40 GB crosses PCIe per run | `FAST_MODE=autotune` |
+
+Change **one** at a time, against a fixed prompt *and* seed, and read
+`Prompt executed in Ns` from the log. Two runs of different resolution or
+duration are not comparable — 0.85 s and 2.57 s per step were both measured on
+this same pod, and the difference was the workflow, not the tuning.
+
+`--fast` features are labelled untested and potentially quality-deteriorating
+upstream. Judge the output, not only the clock.
 | `VRAM_HEADROOM` | — | Extra GB kept free; raise on OOM mid-sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Appended verbatim to the ComfyUI command line |
 
