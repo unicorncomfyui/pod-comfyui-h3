@@ -165,9 +165,15 @@ what the previous pod design did.
 │   ├── vae/                # video (fp16) + audio (fp32) VAEs
 │   └── loras/ upscale_models/ checkpoints/
 ├── custom_nodes/           # your own nodes, survive image updates
+├── .triton/                # Triton's JIT kernel cache - see below
 ├── input/  output/  user/
 └── extra_model_paths.yaml  # regenerated on every boot
 ```
+
+`.triton` matters more than its size suggests. Triton compiles kernels on first
+use. Measured on an RTX 5090: the first sampling step took **37.17 s** on a cold
+cache against **2.59 s** once warm — roughly 35 s of one-off compilation.
+Keeping the cache on the volume pays that once rather than on every pod restart.
 
 ## Configuration
 

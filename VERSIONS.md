@@ -243,10 +243,53 @@ installs against transformers 5.x; the six custom nodes install under Python
 3.13; nothing needs a compiler, so the `-runtime` base holds; Trivy reports no
 CRITICAL/HIGH findings.
 
-**Not proven**: nothing has run on a GPU yet. Whether comfy-kitchen's NVFP4 path
-engages on real sm_120 hardware, whether comfy-aimdo keeps a 42.5 GB working set
-inside 32 GB of VRAM, and end-to-end H3 generation all remain untested until a
-pod is deployed.
+## 10. Verified on hardware
+
+RTX 5090 pod, 2026-08-04, image `cu130-20260804-524da59`. End-to-end T2V
+generation completed.
+
+```
+comfy-kitchen version: 0.2.26          comfy-aimdo version: 0.4.11
+DynamicVRAM support detected and enabled
+Using async weight offloading with 2 streams
+Found quantization metadata version 1 -> MixedPrecisionOps for text encoder
+Model MiniMaxH3TEModel_  prepared for dynamic VRAM loading. 14956MB Staged.
+Model MiniMaxH3VideoVAE  prepared for dynamic VRAM loading.  4965MB Staged.
+Model MiniMaxH3AudioVAE  prepared for dynamic VRAM loading.   576MB Staged.
+Prompt executed in 90.67 seconds
+```
+
+The central bet holds: a 14.9 GB NVFP4 text encoder and two VAEs stage through
+dynamic VRAM on a 32 GB card, and the NVFP4 path engages on real sm_120.
+
+Peak staged in a single run, against 32 GB of VRAM:
+
+| Component | Staged |
+|---|---:|
+| MiniMaxH3 (diffusion) | 19995 MB |
+| MiniMaxH3TEModel_ (text encoder) | 14956 MB |
+| MiniMaxH3VideoVAE | 4965 MB |
+| MiniMaxH3AudioVAE | 576 MB |
+| **Total** | **40.5 GB** |
+
+Triton's JIT cost, isolated by comparing a cold cache against a warm one:
+
+| First sampling step | |
+|---|---:|
+| Cold Triton cache | 37.17 s |
+| Warm | 2.59 s |
+
+**Per-step throughput is not quoted here on purpose.** Two runs gave 0.85 s and
+2.57 s per step; that is the workflow's resolution and duration changing, not a
+property of the pod. Quoting either as "the" figure would be misleading.
+
+Host was larger than the reference profile: 386 GB RAM, 347 GB pinned.
+
+**Three defects only a real deployment could surface**, all now fixed: the host
+driver check was advisory instead of fatal; model download blocked the services
+for the whole first boot; and purging the build toolchain removed the C compiler
+Triton needs for its runtime JIT. That last one is the instructive case — the
+image builds clean, boots clean, loads the model, and only then fails.
 
 ---
 

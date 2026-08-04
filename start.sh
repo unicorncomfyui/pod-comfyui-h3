@@ -33,6 +33,14 @@ fi
 export NETWORK_VOLUME
 
 mkdir -p "$DATA_DIR"/{models,input,output,user,custom_nodes}
+
+# Triton JIT-compiles its kernels on first use and caches the result. Left in
+# the container that cache dies with the pod, so every restart pays the
+# recompile again. Measured on an RTX 5090: first sampling step 37.17s on a
+# cold cache, 2.59s once warm - about 35s of one-off compilation. On the volume
+# it is paid once, ever.
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$DATA_DIR/.triton}"
+mkdir -p "$TRITON_CACHE_DIR"
 mkdir -p "$DATA_DIR"/models/{diffusion_models,text_encoders,vae,loras,upscale_models,checkpoints}
 
 # Ship the bundled upscaler onto the volume once, so it shows up alongside the
