@@ -38,6 +38,17 @@ COMFYUI_HOME = os.environ.get("COMFYUI_HOME", "/app/comfyui")
 DATA_DIR = os.environ.get("COMFYUI_DATA_DIR", "/workspace/comfyui-data")
 PORT = int(os.environ.get("BENCH_PORT", "3111"))
 
+# Set from --keep-custom-nodes. Custom nodes are excluded by default so that a
+# third-party upscaler or frame interpolator cannot end up inside the numbers.
+# That rule is too coarse on its own: workflows routinely route one widget
+# through a small utility node - a math expression feeding a frame count, a
+# resolution helper - and excluding those does not protect the measurement, it
+# only stops you from benchmarking the graph you actually run.
+KEEP_CUSTOM_NODES = False
+
+# Base seed; repetition i runs with BASE_SEED + i. See force_seed().
+BASE_SEED = 1234
+
 # Each entry is (label, extra CLI args). "baseline" must stay first: every
 # other configuration is reported as a delta against it.
 CONFIGS: dict[str, list[str]] = {
@@ -84,7 +95,15 @@ def wait_ready(proc: subprocess.Popen, timeout: int = 300) -> bool:
 
 
 def force_seed(workflow: dict, seed: int) -> int:
-    """Pin every seed-like widget so runs are actually comparable."""
+    """Set every seed-like widget.
+
+    Called with a DIFFERENT value before each repetition, which is the point:
+    ComfyUI caches per node on its inputs, so resubmitting a byte-identical
+    prompt executes nothing at all and reports a runtime of zero. Varying the
+    seed invalidates the sampler's cache entry without changing the amount of
+    work done - the value a seed holds has no effect on how long sampling
+    takes - so the runs stay comparable and actually happen.
+    """
     n = 0
     for node in workflow.values():
         inputs = node.get("inputs", {})
@@ -193,6 +212,7 @@ def sweep_in_instance(workflow: dict, sweeps: list[tuple[str, list]],
         log(f"\n--- {label} ---")
         times = []
         for i in range(reps + 1):
+            force_seed(wf, BASE_SEED + i)
             t = run_prompt(wf)
             if t is None:
                 break
@@ -215,9 +235,10 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
         "--input-directory", f"{DATA_DIR}/input",
         "--user-directory", f"{DATA_DIR}/user",
         "--preview-method", "none",   # previews would skew the measurement
-        "--disable-all-custom-nodes", # keep third-party code out of the numbers
-        *extra,
     ]
+    if not KEEP_CUSTOM_NODES:
+        cmd.append("--disable-all-custom-nodes")
+    cmd += extra
     log(f"\n{'=' * 62}\n{label}: {' '.join(extra) or '(no extra args)'}\n{'=' * 62}")
 
     proc = subprocess.Popen(
@@ -237,6 +258,7 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
         # +1: the first run pays model staging and any cold Triton kernels.
         # It is measured and shown, then dropped from the statistics.
         for i in range(reps + 1):
+            force_seed(workflow, BASE_SEED + i)
             t = run_prompt(workflow)
             if t is None:
                 break
@@ -256,7 +278,10 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("workflow", help="workflow exported with Export (API)")
+    # Optional, then checked by hand: as a required positional it would also be
+    # demanded by --list, which needs no workflow and never reads one.
+    p.add_argument("workflow", nargs="?",
+                   help="workflow exported with Export (API)")
     p.add_argument("--reps", type=int, default=3, help="measured runs per config")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--config", action="append", dest="configs",
@@ -264,13 +289,23 @@ def main() -> int:
     p.add_argument("--sweep", action="append",
                    help="NAME=v1,v2,... sweep a workflow widget; repeatable. "
                         "e.g. --sweep steps=8,12,20 --sweep megapixels=0.3,0.6,1.0")
+    p.add_argument("--keep-custom-nodes", action="store_true",
+                   help="leave custom nodes enabled. Needed when the workflow "
+                        "routes a widget through a utility node, which would "
+                        "otherwise make every run fail on an unknown class_type")
     p.add_argument("--list", action="store_true", help="list configs and exit")
     args = p.parse_args()
+
+    global KEEP_CUSTOM_NODES
+    KEEP_CUSTOM_NODES = args.keep_custom_nodes
 
     if args.list:
         for name, extra in CONFIGS.items():
             print(f"  {name:<12} {' '.join(extra) or '(no extra args)'}")
         return 0
+
+    if not args.workflow:
+        p.error("a workflow is required (or use --list on its own)")
 
     workflow = json.loads(Path(args.workflow).read_text(encoding="utf-8"))
     if not all(isinstance(v, dict) and "class_type" in v for v in workflow.values()):
@@ -278,7 +313,35 @@ def main() -> int:
         log("        Re-export it from ComfyUI with Export (API).")
         return 1
 
-    log(f"Pinned {force_seed(workflow, args.seed)} seed widget(s) to {args.seed}")
+    # Refuse to share the scratch port. wait_ready() only asks whether anything
+    # answers there, so a leftover instance - or a second copy of this script -
+    # would be mistaken for our own: every prompt would go to a server started
+    # with someone else's flags, and the numbers would look plausible and mean
+    # nothing. Two runs writing one log is how that gets noticed, far too late.
+    try:
+        api("/system_stats")
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        pass
+    else:
+        log(f"[ERROR] Something already answers on port {PORT}.")
+        log("        That is either a leftover bench instance or another copy")
+        log("        of this script. Stop it first, or set BENCH_PORT:")
+        log("            pkill -f bench.py")
+        log(f"            pkill -f 'main.py.*--port {PORT}'")
+        return 1
+
+    global BASE_SEED
+    BASE_SEED = args.seed
+
+    n_seeds = force_seed(workflow, BASE_SEED)
+    log(f"Found {n_seeds} seed widget(s); repetitions run at {BASE_SEED}+i")
+    if n_seeds == 0:
+        # Without one, every repetition resubmits a byte-identical prompt,
+        # ComfyUI serves it from cache, and the whole run reports 0.00 s.
+        log("[ERROR] No seed widget found, so repeated runs cannot be forced to")
+        log("        execute - they would all be served from ComfyUI's cache.")
+        log("        Add a sampler seed to the workflow and re-export it.")
+        return 1
 
     if args.sweep:
         # Sweeping parameters shares one instance; sweeping CLI levers cannot.
