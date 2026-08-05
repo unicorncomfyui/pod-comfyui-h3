@@ -1,0 +1,34 @@
+# Trivy triage file - findings we have looked at and consciously accepted.
+#
+# READ THIS BEFORE ADDING AN ENTRY
+#
+# Trivy matches on CVE id, not on package name. There is no way to write
+# "ignore everything in linux-libc-dev" here: `purls` narrows an entry that
+# already has an `id`, it cannot stand alone. So the kernel-header noise is
+# handled in the workflow instead (`ignore-unfixed: true`, plus OS and library
+# findings uploaded under separate categories), and this file stays for the
+# case-by-case decisions - which is what it is good at.
+#
+# An entry here is a claim that someone read the CVE and decided it does not
+# apply. It is not a way to make a red number go green. Every entry carries a
+# `statement` saying why, and an `expired_at` so the claim gets re-examined
+# instead of quietly outliving the reason it was written.
+#
+# Schema: https://trivy.dev/latest/docs/configuration/filtering/
+
+vulnerabilities: []
+  # Template - copy, fill in, and keep the reasoning specific:
+  #
+  # - id: CVE-0000-00000
+  #   purls:
+  #     - "pkg:deb/ubuntu/some-package"
+  #   statement: >
+  #     Why this cannot be reached from this image. Name the code path, not
+  #     just the package. "We don't use it" is not a reason; "nothing in the
+  #     image calls PKCS7_verify, and ComfyUI never parses S/MIME" is.
+  #   expired_at: 2026-12-31
+
+secrets: []
+  # Deliberately empty, and it should stay that way. Anything this scanner
+  # reports is ours to fix at the source rather than to suppress here, and the
+  # build gate in docker-build.yml is set up on that assumption.

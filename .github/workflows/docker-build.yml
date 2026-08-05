@@ -144,14 +144,35 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Trivy vulnerability scan
+      # -----------------------------------------------------------------------
+      # Security scanning.
+      #
+      # trivy-action is pinned to a commit SHA, not @master: these steps hold
+      # `security-events: write`, so whatever is on that branch at run time
+      # executes here with those rights. A tag is not enough - tags move.
+      #
+      # The scan runs after the push rather than before it. Scanning first
+      # would mean loading a ~15 GB image into the runner's local daemon, on a
+      # runner we already have to strip 25 GB of preinstalled toolchains just
+      # to build. The secret gate at the end fails the job loudly instead, and
+      # everything is scanned by digest, so it is exactly the pushed artifact.
+      # -----------------------------------------------------------------------
+      - name: Trivy scan
         if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ matrix.target }}
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: sarif
           output: trivy-${{ matrix.target }}.sarif
+          scanners: vuln,secret
           severity: CRITICAL,HIGH
+          trivyignores: .trivyignore.yaml
+          # Ubuntu ships kernel headers (linux-libc-dev, pulled in by
+          # libc6-dev), and Trivy maps the entire Linux CVE list onto them.
+          # None of it is reachable: a container runs the host's kernel, never
+          # its own. Left unfiltered the signal drowns - the first run reported
+          # 1798 alerts, topped by a Marvell ARM ethernet driver bug.
+          ignore-unfixed: true
 
       - name: Upload Trivy results
         if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
@@ -159,3 +180,38 @@ jobs:
         with:
           sarif_file: trivy-${{ matrix.target }}.sarif
           category: trivy-${{ matrix.target }}
+
+      # An SBOM answers "do my images ship the thing in today's advisory?"
+      # without pulling 15 GB back down to find out.
+      - name: Generate SBOM
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: cyclonedx
+          output: sbom-${{ matrix.target }}.cdx.json
+          skip-setup-trivy: true   # already installed above
+
+      - name: Upload SBOM
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.target }}
+          path: sbom-${{ matrix.target }}.cdx.json
+          retention-days: 90
+
+      # Last, so the alerts and the SBOM are recorded even when this fails.
+      #
+      # This is the only scan that blocks. An unpatched Ubuntu CVE is not
+      # something we can fix and must not wedge the pipeline; anything this
+      # scanner flags is ours, and is fixed rather than published.
+      - name: Fail on secrets in the image
+        if: steps.gate.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          scanners: secret
+          format: table
+          exit-code: 1
+          trivyignores: .trivyignore.yaml
+          skip-setup-trivy: true

@@ -63,6 +63,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         openssh-server rsync \
         google-perftools libtcmalloc-minimal4 \
+    # The openssh-server postinst generates host keys at install time. A host
+    # key identifies a deployment, not an image, so it has no business in a
+    # published layer: start.sh creates the set on the volume at first boot.
+    && rm -f /etc/ssh/ssh_host_* \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -128,6 +132,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Settle it explicitly on the headless build - this is a container.
     && pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python 2>/dev/null || true \
     && pip install --no-cache-dir opencv-python-headless \
+    # Advisory floors, applied last so nothing upstream pulls an older pin back
+    # in. Pillow matters most: ComfyUI hands it every image that is loaded, so
+    # it sits on the widest input surface in the stack. Held below 13 to stay
+    # an API-compatible bump - a floor, not a major upgrade. Raise these when
+    # the scan says to; do not drop them to "simplify" the layer.
+    && pip install --no-cache-dir --upgrade "pillow>=12.3.0,<13" setuptools \
     # Strip node git metadata (~1-2 GB) and any bundled weights.
     && find /app/comfyui -name ".git" -type d -prune -exec rm -rf {} + 2>/dev/null || true \
     && find /app/comfyui/custom_nodes \( -name "*.pth" -o -name "*.safetensors" \) -size +50M -delete \

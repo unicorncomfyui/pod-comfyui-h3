@@ -88,10 +88,62 @@ fi
 # Optional SSH
 # ---------------------------------------------------------------------------
 if [ "${ENABLE_SSH:-false}" = "true" ]; then
-    mkdir -p /var/run/sshd
-    [ -n "$SSH_PASSWORD" ] && echo "root:$SSH_PASSWORD" | chpasswd
+    mkdir -p /var/run/sshd /etc/ssh/sshd_config.d
+
+    # Host keys are stripped from the image at build time (see Dockerfile) and
+    # created here instead, on the volume: they identify this deployment rather
+    # than the image. Keeping them on the volume also makes them stable across
+    # restarts, which matters - a fingerprint that changes on every boot trains
+    # you to click through the warning that exists to be read.
+    SSH_KEY_DIR="$DATA_DIR/ssh"
+    mkdir -p "$SSH_KEY_DIR"
+    chmod 700 "$SSH_KEY_DIR"
+    if ls "$SSH_KEY_DIR"/ssh_host_*_key >/dev/null 2>&1; then
+        cp "$SSH_KEY_DIR"/ssh_host_* /etc/ssh/
+        echo "[OK] SSH host keys restored from $SSH_KEY_DIR"
+    else
+        ssh-keygen -A >/dev/null
+        cp /etc/ssh/ssh_host_* "$SSH_KEY_DIR"/
+        echo "[OK] SSH host keys generated for this deployment"
+    fi
+    chmod 600 /etc/ssh/ssh_host_*_key
+    chmod 644 /etc/ssh/ssh_host_*_key.pub
+
+    # Authentication. Without one of these, sshd runs and accepts connections
+    # that nobody can complete: root ships with a locked password and the image
+    # carries no authorized_keys.
+    SSH_AUTH=""
+    if [ -n "${PUBLIC_KEY}" ]; then
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        printf '%s\n' "${PUBLIC_KEY}" >> /root/.ssh/authorized_keys
+        # Restarts would otherwise append the same key over and over.
+        sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+        SSH_AUTH="public key"
+    fi
+    if [ -n "${SSH_PASSWORD}" ]; then
+        echo "root:${SSH_PASSWORD}" | chpasswd
+        # Ubuntu's compiled-in default is PermitRootLogin prohibit-password, so
+        # setting a password alone silently never works - which is what the
+        # previous version of this block did. Enable it explicitly, and only
+        # when a password was actually asked for.
+        printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' \
+            > /etc/ssh/sshd_config.d/99-pod-password.conf
+        SSH_AUTH="${SSH_AUTH:+$SSH_AUTH, }password"
+        if [ -z "${PUBLIC_KEY}" ]; then
+            echo "[WARN] Password auth on an exposed port 22. PUBLIC_KEY is safer."
+        fi
+    fi
+
+    if [ -z "$SSH_AUTH" ]; then
+        echo "[WARN] ENABLE_SSH=true but neither PUBLIC_KEY nor SSH_PASSWORD is set."
+        echo "       sshd will listen, but no login can succeed. Set PUBLIC_KEY"
+        echo "       (preferred) or SSH_PASSWORD - or set ENABLE_SSH=false."
+    fi
+
     /usr/sbin/sshd -D &
-    echo "[OK] SSH server started on port 22"
+    echo "[OK] SSH server started on port 22 (auth: ${SSH_AUTH:-none})"
 fi
 
 if [ -f "/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4" ]; then

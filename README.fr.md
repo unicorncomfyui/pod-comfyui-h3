@@ -167,10 +167,27 @@ Les principales :
 | `PREWARM_SET` | — | Précharge un set dans le page cache au démarrage. Recommandé sur network volume |
 | `VRAM_HEADROOM` | — | GB gardés libres ; à augmenter en cas d'OOM en cours de sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Ajouté tel quel à la ligne de commande ComfyUI |
-
 | `CACHE_LRU` | — | `--cache-lru N` : évite de ré-encoder un prompt inchangé |
 | `FAST_MODE` | — | Features `--fast` de ComfyUI, ou `all` |
 | `ASYNC_OFFLOAD_STREAMS` | `2` | Streams d'offload des poids |
+| `ENABLE_SSH` | `false` | Démarre sshd sur le port 22 |
+| `PUBLIC_KEY` | — | Clé publique SSH pour root. Préférable au mot de passe |
+| `SSH_PASSWORD` | — | Mot de passe root pour SSH. Bascule aussi `PermitRootLogin`, qu'Ubuntu laisse sinon sur `prohibit-password` |
+
+### SSH
+
+Tu n'en as probablement pas besoin : code-server sur 8080 te donne déjà un
+terminal, et RunPod fournit le sien par-dessus. Laisse `ENABLE_SSH` sur `false`
+sauf si quelque chose réclame vraiment le port 22.
+
+Si tu l'actives, renseigne `PUBLIC_KEY` ou `SSH_PASSWORD`. Sans l'un des deux,
+sshd écoute mais aucune connexion ne peut aboutir — root a un mot de passe
+verrouillé et l'image ne contient aucun `authorized_keys`.
+
+Les clés d'hôte vivent sur le network volume, dans `$COMFYUI_DATA_DIR/ssh`,
+générées au premier démarrage. Elles sont donc propres à ton déploiement et
+stables d'un redémarrage à l'autre : l'empreinte que ton client a mémorisée
+reste valable.
 
 ### Régler la vitesse de génération
 

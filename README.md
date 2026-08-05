@@ -189,6 +189,23 @@ The ones that matter:
 | `CACHE_LRU` | — | Keep N node results; skips re-encoding an unchanged prompt |
 | `FAST_MODE` | — | ComfyUI `--fast` features, or `all` |
 | `ASYNC_OFFLOAD_STREAMS` | 2 | Weight-offload streams |
+| `ENABLE_SSH` | `false` | Start sshd on port 22 |
+| `PUBLIC_KEY` | — | SSH public key for root. Preferred over a password |
+| `SSH_PASSWORD` | — | Root password for SSH. Also flips `PermitRootLogin`, which Ubuntu otherwise leaves at `prohibit-password` |
+
+### SSH
+
+You most likely do not need it: code-server on 8080 already gives you a
+terminal, and RunPod ships its own web terminal on top. Leave `ENABLE_SSH` at
+`false` unless something actually requires port 22.
+
+If you do enable it, set `PUBLIC_KEY` or `SSH_PASSWORD`. With neither, sshd
+listens but no login can succeed — root ships with a locked password and the
+image carries no `authorized_keys`.
+
+Host keys live on the network volume at `$COMFYUI_DATA_DIR/ssh`, generated on
+first boot. They are therefore specific to your deployment and stable across
+restarts, so the fingerprint your client pins stays valid.
 
 ### Tuning generation speed
 
