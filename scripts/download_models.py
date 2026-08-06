@@ -52,9 +52,21 @@ def resolve_sets(manifest: dict, requested: str) -> list[str]:
         else:
             unknown.append(name)
 
+    # An unknown name is skipped, not fatal. MODEL_SETS is typed into a pod
+    # template by hand and outlives the image it was written for: a name added
+    # to a newer manifest, or a plain typo, must not cancel the sets that do
+    # resolve. Aborting the lot cost a real pod its entire download because one
+    # of three names belonged to an image that had not been built yet.
     if unknown:
-        log(f"[ERROR] Unknown model set(s): {', '.join(unknown)}")
-        log(f"        Available: {', '.join(available)}")
+        log(f"[WARN] Unknown model set(s), ignored: {', '.join(unknown)}")
+        log(f"       Available in this image: {', '.join(available)}")
+        if names:
+            log(f"       Continuing with: {', '.join(names)}")
+
+    # Fail only when nothing at all resolved - then the request was entirely
+    # wrong and silently downloading zero files would be worse than stopping.
+    if not names:
+        log("[ERROR] No known model set requested - nothing to download.")
         sys.exit(1)
     return names
 
