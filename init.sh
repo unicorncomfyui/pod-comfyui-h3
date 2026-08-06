@@ -75,7 +75,33 @@ free -h | grep -E "Mem:|Swap:" || true
 # weights through it. Only one diffusion model is resident per workflow, so the
 # figure that matters is ~42.5 GB (one diffusion model + text encoder + both
 # VAEs), not the 63.4 GB total that a full fl2va+ref2va install occupies on disk.
-RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+# `free` reads /proc/meminfo, which inside a container reports the HOST's
+# memory, not this pod's share of it - a 92 GB pod on a big machine cheerfully
+# announces 386 GB. The cgroup limit is the real figure, so prefer it and fall
+# back to /proc only when there is no limit set (cgroup v2 writes "max", v1
+# writes an absurdly large sentinel).
+read_cgroup_ram_gb() {
+    local raw=""
+    if [ -r /sys/fs/cgroup/memory.max ]; then                       # cgroup v2
+        raw=$(cat /sys/fs/cgroup/memory.max)
+    elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then    # cgroup v1
+        raw=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+    fi
+    case "$raw" in
+        ''|max|*[!0-9]*) return 1 ;;
+    esac
+    # Anything past ~1 PB is "unlimited" dressed up as a number.
+    [ "$raw" -gt 1000000000000000 ] && return 1
+    echo $((raw / 1024 / 1024 / 1024))
+}
+
+if RAM_GB=$(read_cgroup_ram_gb); then
+    echo "[INFO] Pod memory limit read from cgroup: ${RAM_GB} GB"
+else
+    RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+    echo "[INFO] No cgroup memory limit - reporting host RAM: ${RAM_GB} GB"
+    echo "       ComfyUI will print this same host figure at startup."
+fi
 if [ "${RAM_GB:-0}" -lt 48 ]; then
     echo "[WARN] Only ${RAM_GB} GB of host RAM detected."
     echo "       A single H3 workflow needs ~42.5 GB resident. Below 48 GB expect"

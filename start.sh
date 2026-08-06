@@ -85,6 +85,30 @@ runpod_volume:
 EOF
 echo "[OK] extra_model_paths.yaml written to $DATA_DIR"
 
+# ComfyUI imports custom nodes from the image AND from the volume path mapped
+# just above. A pack present in both is imported twice; both copies register
+# their frontend extensions under the same name and one wins arbitrarily. What
+# you see is a JavaScript error while a workflow loads, several screens away
+# from the cause. Name the collision here instead of letting it be debugged.
+# Compared case-insensitively on purpose: the registry installs lowercase
+# (comfyui-kjnodes) what the image clones in camel case (ComfyUI-KJNodes).
+for vol in "$DATA_DIR"/custom_nodes/*/; do
+    [ -d "$vol" ] || continue
+    vol_name=$(basename "$vol")
+    vol_key=$(printf '%s' "$vol_name" | tr '[:upper:]' '[:lower:]')
+    for img in "$COMFYUI_HOME"/custom_nodes/*/; do
+        [ -d "$img" ] || continue
+        img_name=$(basename "$img")
+        if [ "$(printf '%s' "$img_name" | tr '[:upper:]' '[:lower:]')" = "$vol_key" ]; then
+            echo "[WARN] Custom node '${vol_name}' is installed twice:"
+            echo "         image  ${img}"
+            echo "         volume ${vol}"
+            echo "       Both will load. Keep the image copy and drop the other:"
+            echo "         rm -rf ${vol}"
+        fi
+    done
+done
+
 # The downloader writes to <COMFYUI_DIR>/models, so it must point at the volume.
 export COMFYUI_DIR="$DATA_DIR"
 
