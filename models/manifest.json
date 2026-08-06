@@ -68,6 +68,18 @@
         }
       ]
     },
+    "minimax-h3-turbo-lora": {
+      "description": "Step-distillation LoRA for fl2va. Runs at 4 steps instead of 12 and needs the MiniMax-H3 Turbo Sampler node, so it changes nothing until a workflow loads it. 0.78 GB, hence on by default.",
+      "default": true,
+      "files": [
+        {
+          "repo": "larryvrh/MiniMax-H3-Turbo-Lora",
+          "path": "minimax_h3_turbo_4step_ckpt500.safetensors",
+          "dest": "loras",
+          "size_gb": 0.78
+        }
+      ]
+    },
     "minimax-h3-fp8": {
       "description": "MiniMax H3 fl2va in fp8_scaled instead of int8_convrot. Alternative quantisation - try it if int8 convrot misbehaves on your driver.",
       "default": false,

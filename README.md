@@ -182,7 +182,7 @@ The ones that matter:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va` | Which sets from `models/manifest.json` to download |
+| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora` | Which sets from `models/manifest.json` to download |
 | `DOWNLOAD_MODELS` | `true` | Set `false` to boot without fetching weights |
 | `FAST_DISK` | `false` | Trade host RAM for disk when offloading — only worth it on a RAM-starved pod |
 | `PREWARM_SET` | — | Read one set into the page cache at boot. Recommended on a network volume |
@@ -207,6 +207,28 @@ Host keys live on the network volume at `$COMFYUI_DATA_DIR/ssh`, generated on
 first boot. They are therefore specific to your deployment and stable across
 restarts, so the fingerprint your client pins stays valid.
 
+### 4-step turbo LoRA
+
+The largest lever available, and the only one in this section that trades
+output quality for speed. A step-distillation LoRA samples at 4 steps instead
+of 12.
+
+It ships by default — 0.78 GB, and inert until a workflow loads it. To use it:
+
+1. Open the seeded `minimax_h3_t2v_turbo.json` workflow.
+2. Load `minimax_h3_turbo_4step_ckpt500.safetensors` between the model loader
+   and the sampler.
+3. Swap the sampler for **MiniMax-H3 Turbo Sampler (4-step)**, scheduler
+   `simple`.
+
+The node is pinned to a commit instead of tracking its branch. Its author
+describes it as an early prototype and asks users to keep it updated — which is
+the one property a reproducible image must not have. Bump the pin in the
+Dockerfile deliberately, after measuring.
+
+Quality is genuinely at stake here, unlike the levers below. Watch the video,
+not the clock.
+
 ### Tuning generation speed
 
 On a measured run, 12 steps took 43.26 s of which ~30.8 s was sampling — the
@@ -219,7 +241,7 @@ Attack the two halves separately:
 |---|---|
 | `CACHE_LRU=10` — reuse the conditioning | `FAST_MODE=fp16_accumulation` |
 | `PREWARM_SET` — first-load I/O | `FAST_MODE=cublas_ops` |
-| `ASYNC_OFFLOAD_STREAMS=4` — ~40 GB crosses PCIe per run | `FAST_MODE=autotune` |
+| `ASYNC_OFFLOAD_STREAMS` — benchmarked at 4 and 8: no effect | `FAST_MODE=autotune` |
 
 Which half dominates depends entirely on the workflow. Two runs on this pod,
 identical models and step count, differed 3× per step — so on a light workflow

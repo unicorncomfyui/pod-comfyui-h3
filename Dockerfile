@@ -43,7 +43,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VSCODE_PORT=8080 \
     HF_HOME=/workspace/.cache/huggingface \
     DOWNLOAD_MODELS=true \
-    MODEL_SETS="minimax-h3-fl2va,minimax-h3-ref2va"
+    MODEL_SETS="minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora"
 
 # Record the build parameters so a running pod can report exactly what it is.
 ENV BUILD_TORCH_INDEX=${TORCH_INDEX} \
@@ -112,6 +112,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git clone --depth 1 https://github.com/rgthree/rgthree-comfy.git \
     && git clone --depth 1 https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git \
     && git clone --depth 1 https://github.com/chrisgoringe/cg-use-everywhere.git \
+    # Sampler for the step-distillation LoRA: 4 steps instead of 12. Pinned to a
+    # commit, unlike the six above - the author calls it an early prototype and
+    # asks users to keep it updated, which is precisely the property an image
+    # must not have. Bump this deliberately, after measuring, never by rebuild.
+    && git clone https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo.git \
+    && git -C ComfyUI-MiniMax-H3-Turbo checkout -q 96cc1ddc001617da132dd73f31cd43666bf1d8d4 \
     # ComfyUI-Easy-Use is deliberately absent: it depends on clip_interrogator
     # 0.6.0, last released March 2023, which is not a safe bet against
     # transformers 5.x. It is image-workflow QoL with little value on a video pod.
@@ -165,7 +171,12 @@ RUN mkdir -p /app/comfyui/models/upscale_models \
              /root/.config/code-server \
              /root/.local/share/code-server/User \
     && wget -q -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
-        "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"
+        "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth" \
+    # Ready-made turbo workflow, staged onto the volume by start.sh - ComfyUI
+    # reads workflows from --user-directory, which points at the volume, so a
+    # copy left in the image would never be listed in the UI.
+    && wget -q -O /app/comfyui/user/default/workflows/minimax_h3_t2v_turbo.json \
+        "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/resolve/main/minimax_h3_t2v_turbo.json"
 
 COPY models/manifest.json /app/models/manifest.json
 COPY scripts/download_models.py /app/scripts/download_models.py

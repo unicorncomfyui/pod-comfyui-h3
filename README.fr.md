@@ -161,7 +161,7 @@ Les principales :
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va` | Quels sets de `models/manifest.json` télécharger |
+| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora` | Quels sets de `models/manifest.json` télécharger |
 | `DOWNLOAD_MODELS` | `true` | `false` pour démarrer sans récupérer les poids |
 | `FAST_DISK` | `false` | Échange RAM hôte contre disque à l'offload — utile seulement sur un pod pauvre en RAM |
 | `PREWARM_SET` | — | Précharge un set dans le page cache au démarrage. Recommandé sur network volume |
@@ -189,6 +189,29 @@ générées au premier démarrage. Elles sont donc propres à ton déploiement e
 stables d'un redémarrage à l'autre : l'empreinte que ton client a mémorisée
 reste valable.
 
+### LoRA turbo 4 steps
+
+Le levier le plus important disponible, et le seul de cette section qui échange
+de la qualité contre de la vitesse. Un LoRA de distillation de steps permet
+d'échantillonner en 4 steps au lieu de 12.
+
+Il est embarqué par défaut — 0,78 GB, et sans effet tant qu'un workflow ne le
+charge pas. Pour l'utiliser :
+
+1. Ouvre le workflow `minimax_h3_t2v_turbo.json`, déposé sur le volume.
+2. Charge `minimax_h3_turbo_4step_ckpt500.safetensors` entre le chargeur de
+   modèle et l'échantillonneur.
+3. Remplace l'échantillonneur par **MiniMax-H3 Turbo Sampler (4-step)**,
+   scheduler `simple`.
+
+Le nœud est épinglé sur un commit plutôt que de suivre sa branche. Son auteur le
+décrit comme un prototype et demande de le tenir à jour — exactement la
+propriété qu'une image reproductible ne doit pas avoir. Le pin se remonte
+délibérément dans le Dockerfile, après mesure.
+
+Ici la qualité est réellement en jeu, contrairement aux leviers ci-dessous.
+Regarde la vidéo, pas le chronomètre.
+
 ### Régler la vitesse de génération
 
 Sur un run mesuré, 12 steps ont pris 43,26 s dont ~30,8 s de sampling — les
@@ -200,7 +223,7 @@ changé.
 |---|---|
 | `CACHE_LRU=10` — réutilise le conditionnement | `FAST_MODE=fp16_accumulation` |
 | `PREWARM_SET` — I/O du premier chargement | `FAST_MODE=cublas_ops` |
-| `ASYNC_OFFLOAD_STREAMS=4` — ~40 GB par run sur PCIe | `FAST_MODE=autotune` |
+| `ASYNC_OFFLOAD_STREAMS` — mesuré à 4 et 8 : aucun effet | `FAST_MODE=autotune` |
 
 Laquelle des deux moitiés domine dépend entièrement du workflow : sur un run
 léger l'overhead pesait 29 % du total, sur un lourd environ 11 %.

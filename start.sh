@@ -51,6 +51,20 @@ if [ -f "$COMFYUI_HOME/models/upscale_models/4x-UltraSharp.pth" ] && \
        "$DATA_DIR/models/upscale_models/" 2>/dev/null || true
 fi
 
+# Same idea for the bundled workflows: ComfyUI lists what is under
+# --user-directory, which is on the volume, so a copy that stays in the image
+# is invisible. Seeded once and never overwritten - an edited workflow belongs
+# to the user, and a pod restart must not silently revert it.
+mkdir -p "$DATA_DIR/user/default/workflows"
+for wf in "$COMFYUI_HOME"/user/default/workflows/*.json; do
+    [ -f "$wf" ] || continue
+    target="$DATA_DIR/user/default/workflows/$(basename "$wf")"
+    if [ ! -f "$target" ]; then
+        cp "$wf" "$target" 2>/dev/null || true
+        echo "[OK] Workflow seeded: $(basename "$wf")"
+    fi
+done
+
 # ---------------------------------------------------------------------------
 # Point ComfyUI at the volume. Regenerated on every boot so a changed
 # COMFYUI_DATA_DIR takes effect without hand-editing a file on the volume.
