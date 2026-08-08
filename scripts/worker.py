@@ -80,14 +80,45 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 # ComfyUI HTTP
 # ---------------------------------------------------------------------------
+def explain_http_error(body: str) -> str:
+    """Turn ComfyUI's rejection body into something a human can act on.
+
+    /prompt answers a refused graph with 400 and a JSON body naming the node
+    and the field. urllib puts that body on the exception rather than in the
+    message, so the default rendering is a bare "HTTP Error 400: Bad Request"
+    - the one message that says nothing about which widget is wrong.
+    """
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return body[:800]
+
+    lines = []
+    err = data.get("error") or {}
+    if err:
+        detail = err.get("details") or ""
+        lines.append(f"{err.get('type', 'error')}: {err.get('message', '')} {detail}".strip())
+    for nid, node_err in (data.get("node_errors") or {}).items():
+        klass = node_err.get("class_type", "?")
+        for d in node_err.get("errors", []):
+            lines.append(f"  node {nid} ({klass}): {d.get('message')} - {d.get('details')}")
+    return "\n".join(lines) or body[:800]
+
+
 def api(path: str, payload: dict | None = None, timeout: int = 30) -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
         f"{COMFY_URL}{path}", data=data,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read() or "{}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or "{}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        raise RuntimeError(
+            f"HTTP {e.code} from {path}\n{explain_http_error(body)}"
+        ) from None
 
 
 def upload_image(path: Path) -> str:
