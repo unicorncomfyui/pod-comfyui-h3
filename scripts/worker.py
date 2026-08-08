@@ -549,6 +549,58 @@ class SqsSource:
         log(f"  returned to the queue: {type(err).__name__}")
 
 
+class BrokerSource:
+    """The same three operations, through a broker that holds the AWS side.
+
+    Preferred over SqsSource on rented hardware. The pod carries one opaque
+    string instead of an AWS access key, and that string is worth exactly the
+    three actions the broker implements. Revoking it means deleting it from
+    the broker's key list - immediate, and per pod.
+
+    It also matters that a queue key is not as harmless as it sounds:
+    sqs:ReceiveMessage returns message BODIES, and a body carries the presigned
+    read and write URLs. Whoever holds that key can read every source image and
+    overwrite every result for as long as the key lives. Going through a broker
+    removes that whole class of exposure from the machine.
+    """
+
+    def __init__(self, url: str, key: str, timeout: int = 40):
+        self.url = url.rstrip("/")
+        self.key = key
+        self.timeout = timeout
+
+    def _call(self, payload: dict) -> dict:
+        req = urllib.request.Request(
+            self.url, data=json.dumps(payload).encode(), method="POST",
+            headers={"Content-Type": "application/json", "X-Worker-Key": self.key},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read() or "{}")
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            if e.code == 403:
+                raise SystemExit(
+                    "[ERROR] Broker refused this worker key. Check WORKER_KEY "
+                    "here and WORKER_KEYS on the broker."
+                ) from None
+            raise RuntimeError(f"broker HTTP {e.code}: {body[:300]}") from None
+
+    def claim(self) -> tuple[dict, str] | None:
+        got = self._call({"action": "claim"})
+        if got.get("empty", True):
+            return None
+        job = job_from_enrichment(got["envelope"], got.get("message_id", "job"))
+        return job, got["receipt"]
+
+    def done(self, receipt: str) -> None:
+        self._call({"action": "ack", "receipt": receipt})
+
+    def fail(self, receipt: str, err: Exception) -> None:
+        self._call({"action": "nack", "receipt": receipt})
+        log(f"  returned to the queue: {type(err).__name__}")
+
+
 # ---------------------------------------------------------------------------
 def process(job: dict, template: dict, template_name: str,
             outbox: Path, dry_run: bool) -> dict:
@@ -677,9 +729,12 @@ def main() -> int:
                     help="inbox/running/done/failed live under here")
     ap.add_argument("--outbox", default="jobs/out")
     ap.add_argument("--job", help="run this one file and exit, ignoring the inbox")
+    ap.add_argument("--broker-url",
+                    default=os.environ.get("BROKER_URL", ""),
+                    help="consume through a broker; needs WORKER_KEY, no AWS keys")
     ap.add_argument("--queue-url",
                     default=os.environ.get("QUEUE_URL", ""),
-                    help="consume from this SQS queue instead of --root")
+                    help="consume from SQS directly; needs AWS credentials")
     ap.add_argument("--visibility", type=int, default=900,
                     help="SQS visibility timeout; must exceed one generation")
     ap.add_argument("--once", action="store_true", help="drain the queue, then exit")
@@ -729,9 +784,19 @@ def main() -> int:
             return 1
         return 0
 
-    if args.queue_url:
+    if args.broker_url:
+        key = os.environ.get("WORKER_KEY", "")
+        if len(key) < 32:
+            log("[ERROR] WORKER_KEY missing or too short (32+ chars).")
+            log("        Generate one: python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+            return 1
+        source = BrokerSource(args.broker_url, key)
+        log("Polling through the broker (Ctrl-C to stop)")
+    elif args.queue_url:
         source = SqsSource(args.queue_url, visibility=args.visibility)
         log(f"Polling {args.queue_url.rsplit('/', 1)[-1]} (Ctrl-C to stop)")
+        log("[WARN] direct SQS puts AWS keys on this machine;"
+            " --broker-url avoids that")
     else:
         source = FileSource(Path(args.root))
         log(f"Watching {source.inbox} (Ctrl-C to stop)")
@@ -742,7 +807,7 @@ def main() -> int:
             if args.once:
                 log("Nothing left - done.")
                 return 0
-            if not args.queue_url:
+            if not args.queue_url:      # SQS long-polls inside claim()
                 time.sleep(POLL_SECONDS)
             continue
 
