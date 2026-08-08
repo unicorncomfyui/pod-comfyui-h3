@@ -122,7 +122,11 @@ def job_from_enrichment(data: dict, fallback_id: str) -> dict:
 
     # An s3:// pair cannot be fetched without credentials the pod does not
     # have. A presigned URL can, and it is the http branch of stage_image.
-    if source.get("url"):
+    # A bare `image` overrides both, which is how the enrichment output gets
+    # tested by hand before the envelope exists upstream.
+    if data.get("image"):
+        job["image"] = data["image"]
+    elif source.get("url"):
         job["image"] = source["url"]
     elif source.get("key"):
         log(f"  [WARN] source is s3://{source.get('bucket')}/{source['key']} -"
