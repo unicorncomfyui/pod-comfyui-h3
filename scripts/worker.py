@@ -801,8 +801,26 @@ def main() -> int:
         source = FileSource(Path(args.root))
         log(f"Watching {source.inbox} (Ctrl-C to stop)")
 
+    backoff = 0
     while True:
-        claimed = source.claim()
+        # Claiming is outside the per-job try/except, so a transient failure
+        # here used to kill the worker outright - and the likeliest cause is
+        # the least alarming one: a batch of enrichments eating the account's
+        # Lambda concurrency, throttling the broker for a few seconds. Retry
+        # with a ceiling instead, and say so once rather than every time.
+        try:
+            claimed = source.claim()
+            if backoff:
+                log("Source reachable again.")
+                backoff = 0
+        except SystemExit:
+            raise                          # a refused key must stop the worker
+        except Exception as e:  # noqa: BLE001 - network, throttling, 5xx
+            backoff = min(backoff * 2 or 5, 60)
+            log(f"[WARN] claim failed ({type(e).__name__}), retrying in {backoff}s: {e}")
+            time.sleep(backoff)
+            continue
+
         if claimed is None:
             if args.once:
                 log("Nothing left - done.")
