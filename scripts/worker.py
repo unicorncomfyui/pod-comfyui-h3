@@ -414,8 +414,18 @@ def main() -> int:
     outbox = Path(args.outbox)
 
     if args.job:
-        job = json.loads(Path(args.job).read_text(encoding="utf-8"))
-        job.setdefault("id", Path(args.job).stem)
+        job_path = Path(args.job)
+        if not job_path.is_file():
+            log(f"[ERROR] Job file not found: {job_path}")
+            log('        Minimal job: {"id": "t1", "prompt": "..."}')
+            log("        Every other field falls back to the template.")
+            return 1
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            log(f"[ERROR] {job_path} is not valid JSON: {e}")
+            return 1
+        job.setdefault("id", job_path.stem)
         try:
             process(job, template, outbox, args.dry_run)
         except Exception as e:  # noqa: BLE001 - single job: report, exit non-zero
