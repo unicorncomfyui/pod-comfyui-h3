@@ -235,6 +235,25 @@ COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.js
 RUN sed -i 's/\r$//' /app/init.sh /app/start.sh /app/fetch_models.sh \
     && chmod +x /app/init.sh /app/start.sh /app/fetch_models.sh
 
+# Declare the driver we actually need, not the one the base tag implies.
+#
+# nvidia/cuda:13.3.x stamps NVIDIA_REQUIRE_CUDA=cuda>=13.3, and the container
+# runtime's prestart hook refuses to start on any host below that - the pod
+# never boots, with "unsatisfied condition: cuda>=13.3". But nothing here needs
+# 13.3: torch is built for cu130, whose floor is driver 580, which is the same
+# number init.sh checks. The 13.3 runtime libraries ship INSIDE the image; only
+# the driver comes from the host, and CUDA minor version compatibility is
+# exactly the guarantee that a 13.x driver runs a 13.y runtime.
+#
+# Overriding it here rather than rebasing on 13.0 widens the pool of machines
+# RunPod can schedule us on by a lot. Deliberately placed in the volatile zone:
+# only the image's FINAL environment is read, so setting it last costs one
+# metadata layer instead of invalidating torch.
+#
+# Note for the pod template: RunPod's "Allowed CUDA versions" is a whitelist of
+# host versions, not a minimum. Ticking 13.0 permits a 13.0 host.
+ENV NVIDIA_REQUIRE_CUDA="cuda>=13.0"
+
 EXPOSE 8080 3000 22
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
