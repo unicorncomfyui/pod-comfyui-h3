@@ -132,6 +132,14 @@ def job_from_enrichment(data: dict, fallback_id: str) -> dict:
         log(f"  [WARN] source is s3://{source.get('bucket')}/{source['key']} -"
             " no presigned URL to fetch it with, keeping the template's image")
 
+    # Where the finished video goes. A presigned PUT means the pod needs no
+    # write access to the bucket - the URL IS the grant, scoped to one key and
+    # one deadline. Together with the read URL above, that is why this worker
+    # holds no AWS credentials for S3 at all: the only secret it carries is a
+    # queue key, and a leaked queue key drains jobs rather than reading data.
+    if (data.get("output") or {}).get("url"):
+        job["output_url"] = data["output"]["url"]
+
     if enriched.get("negative_prompt"):
         log("  [WARN] negative_prompt ignored: H3 is CFG-distilled and the"
             " graph guides with BasicGuider, which has no negative branch")
@@ -261,6 +269,25 @@ def upload_image(path: Path) -> str:
     # LoadImage addresses a nested file as "subfolder/name".
     sub = got.get("subfolder") or ""
     return f"{sub}/{got['name']}" if sub else got["name"]
+
+
+def put_output(url: str, path: Path) -> None:
+    """Upload a produced file to a presigned PUT URL.
+
+    A plain HTTP PUT: the signature is already in the query string, so no
+    credentials, no SDK, and nothing to leak beyond a URL that grants exactly
+    this one key until it expires.
+    """
+    body = path.read_bytes()
+    req = urllib.request.Request(
+        url, data=body, method="PUT",
+        # Must match what the signer allowed. Content-Type is NOT part of the
+        # signature unless the Lambda put it in Params, so keep it generic.
+        headers={"Content-Length": str(len(body))},
+    )
+    with urllib.request.urlopen(req, timeout=600) as r:
+        parts = urllib.parse.urlparse(url)
+        log(f"  uploaded {path.name} -> {parts.netloc}{parts.path} ({r.status})")
 
 
 def fetch_output(item: dict, dest: Path) -> Path:
@@ -459,6 +486,69 @@ class FileSource:
         )
 
 
+class SqsSource:
+    """The same three operations, backed by a queue instead of directories.
+
+    The message body carries the WHOLE envelope, not a pointer to one. An
+    envelope is a few kilobytes against a 256 KB limit, and it means the pod
+    never reads S3: the image arrives as a presigned GET, the result leaves by
+    a presigned PUT, and the only credential on the machine is a queue key
+    scoped to three actions on one queue. On rented hardware that distinction
+    is the whole point - a leaked queue key drains jobs, it does not read
+    buckets.
+
+    Mapping to the file version:
+      claim -> receive_message, long-polled
+      done  -> delete_message
+      fail  -> visibility 0, so the queue retries and, past maxReceiveCount,
+               the redrive policy moves it to the dead-letter queue
+    """
+
+    def __init__(self, queue_url: str, wait: int = 20, visibility: int = 900):
+        try:
+            import boto3  # imported here: the file version needs no AWS SDK
+        except ImportError:
+            raise SystemExit(
+                "[ERROR] boto3 is required for --queue-url.  pip install boto3"
+            ) from None
+        self.sqs = boto3.client("sqs")
+        self.queue_url = queue_url
+        self.wait = wait
+        # Must exceed the longest generation, or the queue hands the same job
+        # to a second worker while the first is still sampling. 159 s measured
+        # at 0.88 MP; 900 leaves room for a queue of templates we have not
+        # benchmarked yet.
+        self.visibility = visibility
+
+    def claim(self) -> tuple[dict, str] | None:
+        got = self.sqs.receive_message(
+            QueueUrl=self.queue_url,
+            MaxNumberOfMessages=1,          # one GPU, one job
+            WaitTimeSeconds=self.wait,      # long poll: the connection is held
+            VisibilityTimeout=self.visibility,
+        )
+        messages = got.get("Messages") or []
+        if not messages:
+            return None
+
+        msg = messages[0]
+        job = job_from_enrichment(json.loads(msg["Body"]), msg["MessageId"])
+        return job, msg["ReceiptHandle"]
+
+    def done(self, handle: str) -> None:
+        self.sqs.delete_message(QueueUrl=self.queue_url, ReceiptHandle=handle)
+
+    def fail(self, handle: str, err: Exception) -> None:
+        # Release it now rather than waiting out the visibility timeout. A job
+        # that fails for its own reasons will fail again and reach the DLQ
+        # quickly; one that failed because this pod is broken gets picked up by
+        # another worker instead of sitting invisible for fifteen minutes.
+        self.sqs.change_message_visibility(
+            QueueUrl=self.queue_url, ReceiptHandle=handle, VisibilityTimeout=0
+        )
+        log(f"  returned to the queue: {type(err).__name__}")
+
+
 # ---------------------------------------------------------------------------
 def process(job: dict, template: dict, template_name: str,
             outbox: Path, dry_run: bool) -> dict:
@@ -508,11 +598,24 @@ def process(job: dict, template: dict, template_name: str,
     # what the orchestrator reads back, so keep its shape when the destination
     # changes - only the values under "path" become URIs.
     saved = []
+    uploaded = False
     for item in items:
         dest = fetch_output(item, out_dir / item["filename"])
         size = dest.stat().st_size
         saved.append({"kind": item["kind"], "path": str(dest), "bytes": size})
         log(f"  saved {dest.name} ({size / 1e6:.1f} MB)")
+
+        # One presigned PUT signs one key, so only the primary artefact
+        # goes up. A graph emitting several videos would need as many URLs
+        # from the enrichment step; say so rather than drop them quietly.
+        if job.get("output_url") and item["kind"] == "video":
+            if uploaded:
+                log(f"  [WARN] {dest.name} not uploaded: the envelope"
+                    " carries a single presigned PUT, already used")
+            else:
+                put_output(job["output_url"], dest)
+                saved[-1]["uploaded"] = True
+                uploaded = True
 
     result = {
         # Schema marker. runs.jsonl is append-only, so it outlives the code
@@ -574,7 +677,12 @@ def main() -> int:
                     help="inbox/running/done/failed live under here")
     ap.add_argument("--outbox", default="jobs/out")
     ap.add_argument("--job", help="run this one file and exit, ignoring the inbox")
-    ap.add_argument("--once", action="store_true", help="drain the inbox, then exit")
+    ap.add_argument("--queue-url",
+                    default=os.environ.get("QUEUE_URL", ""),
+                    help="consume from this SQS queue instead of --root")
+    ap.add_argument("--visibility", type=int, default=900,
+                    help="SQS visibility timeout; must exceed one generation")
+    ap.add_argument("--once", action="store_true", help="drain the queue, then exit")
     ap.add_argument("--dry-run", action="store_true",
                     help="write the injected graph instead of queueing it")
     args = ap.parse_args()
@@ -621,16 +729,21 @@ def main() -> int:
             return 1
         return 0
 
-    source = FileSource(Path(args.root))
-    log(f"Watching {source.inbox} (Ctrl-C to stop)")
+    if args.queue_url:
+        source = SqsSource(args.queue_url, visibility=args.visibility)
+        log(f"Polling {args.queue_url.rsplit('/', 1)[-1]} (Ctrl-C to stop)")
+    else:
+        source = FileSource(Path(args.root))
+        log(f"Watching {source.inbox} (Ctrl-C to stop)")
 
     while True:
         claimed = source.claim()
         if claimed is None:
             if args.once:
-                log("Inbox empty - done.")
+                log("Nothing left - done.")
                 return 0
-            time.sleep(POLL_SECONDS)
+            if not args.queue_url:
+                time.sleep(POLL_SECONDS)
             continue
 
         job, held = claimed
