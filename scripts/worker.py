@@ -409,6 +409,16 @@ def process(job: dict, template: dict, outbox: Path, dry_run: bool) -> dict:
     (out_dir / "result.json").write_text(
         json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+    # result.json holds the LAST run of an id, and ids get reused - rerunning
+    # "t1" overwrites it while ComfyUI keeps numbering the videos upward, so
+    # the manifest stops describing the files sitting next to it and the
+    # earlier seed is gone. Append every run here too: one line each, never
+    # rewritten, which is both the audit trail and the shape a trace collector
+    # ingests later.
+    with (outbox / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(result, ensure_ascii=False) + "\n")
+
     return result
 
 
