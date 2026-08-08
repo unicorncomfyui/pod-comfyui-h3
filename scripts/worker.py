@@ -402,8 +402,12 @@ def stage_image(ref: str, workdir: Path) -> str:
     """
     if ref.startswith(("http://", "https://")):
         workdir.mkdir(parents=True, exist_ok=True)
-        local = workdir / (Path(urllib.parse.urlparse(ref).path).name or "input.png")
-        log(f"  fetching {ref}")
+        parts = urllib.parse.urlparse(ref)
+        local = workdir / (Path(parts.path).name or "input.png")
+        # Host and path only. A presigned URL runs to two thousand characters
+        # of signature and session token - unreadable in a log, and a bearer
+        # credential that has no business being written to one.
+        log(f"  fetching {parts.netloc}{parts.path}")
         with urllib.request.urlopen(ref, timeout=300) as r:
             local.write_bytes(r.read())
     else:
