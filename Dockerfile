@@ -227,6 +227,12 @@ WORKDIR /app
 COPY models/manifest.json /app/models/manifest.json
 COPY scripts/download_models.py /app/scripts/download_models.py
 COPY scripts/bench.py /app/scripts/bench.py
+COPY scripts/worker.py /app/scripts/worker.py
+# API-format templates the worker injects into, plus a sample job. Kept out of
+# ComfyUI's own workflow directory on purpose: these are the /prompt payload
+# shape, not the editor's, and the UI would list them as broken graphs.
+COPY workflows/ /app/workflows/
+COPY examples/ /app/examples/
 COPY init.sh start.sh fetch_models.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
 COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.json
