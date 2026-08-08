@@ -78,6 +78,89 @@ def log(msg: str) -> None:
     print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
 
 
+# Fields the enrichment step produces that describe the shot rather than drive
+# it. They already read back inside enriched_prompt, so they are carried into
+# the run record for analysis rather than injected a second time.
+ENRICHMENT_META = ("style_keywords", "camera_movement", "lighting", "motion",
+                   "timeline", "dialogue")
+
+
+def job_from_enrichment(data: dict, fallback_id: str) -> dict:
+    """Turn the upstream enrichment output into a job this worker can run.
+
+    Accepts both shapes: the bare object the prompt Lambda emits today, and
+    that object wrapped in an envelope carrying trace_id, the source image and
+    generation parameters. Detecting rather than requiring the envelope lets
+    the pipeline be wired one end at a time.
+
+    negative_prompt is dropped on purpose. H3 is CFG-distilled and the graph
+    guides with BasicGuider, which takes a single conditioning - there is no
+    negative branch to put it in. Saying so beats ignoring it silently.
+    """
+    enriched = data["prompt"] if isinstance(data.get("prompt"), dict) else data
+    if "enriched_prompt" not in enriched:
+        raise ValueError(
+            "no enriched_prompt in this file - expected the enrichment output, "
+            f"got keys: {', '.join(sorted(enriched)[:8]) or '(none)'}"
+        )
+
+    source = data.get("source") or {}
+    job: dict = {
+        "id": data.get("id") or Path(source.get("key", "")).stem or fallback_id,
+        "prompt": enriched["enriched_prompt"],
+    }
+    if data.get("trace_id"):
+        job["trace_id"] = data["trace_id"]
+
+    # Generation parameters ride in the envelope when the caller set any;
+    # whatever is absent falls back to the template, as for a hand-written job.
+    for key, value in (data.get("params") or {}).items():
+        if key in BINDINGS:
+            job[key] = value
+        else:
+            log(f"  [WARN] params.{key} has no binding - ignored")
+
+    # An s3:// pair cannot be fetched without credentials the pod does not
+    # have. A presigned URL can, and it is the http branch of stage_image.
+    if source.get("url"):
+        job["image"] = source["url"]
+    elif source.get("key"):
+        log(f"  [WARN] source is s3://{source.get('bucket')}/{source['key']} -"
+            " no presigned URL to fetch it with, keeping the template's image")
+
+    if enriched.get("negative_prompt"):
+        log("  [WARN] negative_prompt ignored: H3 is CFG-distilled and the"
+            " graph guides with BasicGuider, which has no negative branch")
+
+    meta = {k: enriched[k] for k in ENRICHMENT_META if enriched.get(k)}
+    if meta:
+        job["enrichment"] = meta
+    return job
+
+
+def load_job(path: Path) -> dict:
+    """Read a job file, whichever of the two shapes it holds."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name} is not a JSON object")
+    if "enriched_prompt" in data or (
+        isinstance(data.get("prompt"), dict) and "enriched_prompt" in data["prompt"]
+    ):
+        return job_from_enrichment(data, path.stem)
+
+    # Every other field may fall back to the template; the prompt may not.
+    # Absent, the template's own placeholder text would be sampled and the run
+    # would look successful while describing nothing anyone asked for.
+    if not isinstance(data.get("prompt"), str) or not data["prompt"].strip():
+        raise ValueError(
+            f"{path.name} has no usable prompt - a job needs either a "
+            '"prompt" string or the enrichment output with "enriched_prompt"'
+        )
+
+    data.setdefault("id", path.stem)
+    return data
+
+
 # ComfyUI groups a node's outputs under a key that describes the node, not the
 # file: SaveVideo files arrive under "images", so a consumer trusting that key
 # would treat an mp4 as a still. The extension is the honest answer, and the
@@ -354,8 +437,7 @@ class FileSource:
                 path.rename(held)      # atomic: two workers cannot both win it
             except OSError:
                 continue
-            job = json.loads(held.read_text(encoding="utf-8"))
-            job.setdefault("id", held.stem)
+            job = load_job(held)
             return job, held
         return None
 
@@ -440,6 +522,7 @@ def process(job: dict, template: dict, template_name: str,
         "status": "ok",
         "seconds": round(elapsed, 2),
         "applied": applied,
+        "enrichment": job.get("enrichment"),
         "outputs": saved,
         # Both ends, not just the finish: a span needs a start, and the gap
         # between started_at and seconds is the queue wait.
@@ -519,11 +602,10 @@ def main() -> int:
             log("        Every other field falls back to the template.")
             return 1
         try:
-            job = json.loads(job_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            log(f"[ERROR] {job_path} is not valid JSON: {e}")
+            job = load_job(job_path)
+        except (json.JSONDecodeError, ValueError) as e:
+            log(f"[ERROR] {job_path}: {e}")
             return 1
-        job.setdefault("id", job_path.stem)
         try:
             process(job, template, template_path.name, outbox, args.dry_run)
         except Exception as e:  # noqa: BLE001 - single job: report, exit non-zero
