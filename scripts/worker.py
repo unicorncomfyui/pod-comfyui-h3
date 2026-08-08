@@ -77,6 +77,21 @@ def log(msg: str) -> None:
     print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
 
 
+# ComfyUI groups a node's outputs under a key that describes the node, not the
+# file: SaveVideo files arrive under "images", so a consumer trusting that key
+# would treat an mp4 as a still. The extension is the honest answer, and the
+# original key is kept as comfy_key so nothing is lost.
+_KIND_BY_SUFFIX = {
+    ".mp4": "video", ".webm": "video", ".mkv": "video", ".mov": "video",
+    ".flac": "audio", ".wav": "audio", ".mp3": "audio", ".ogg": "audio",
+    ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image",
+}
+
+
+def media_kind(filename: str, comfy_key: str) -> str:
+    return _KIND_BY_SUFFIX.get(Path(filename).suffix.lower(), comfy_key)
+
+
 # ---------------------------------------------------------------------------
 # ComfyUI HTTP
 # ---------------------------------------------------------------------------
@@ -197,14 +212,16 @@ def submit_and_wait(graph: dict, timeout: int = 3600) -> tuple[float, list[dict]
         start, end = stamps.get("execution_start"), stamps.get("execution_success")
         elapsed = (end - start) / 1000.0 if start and end else -1.0
 
-        # Outputs are grouped per node then per media kind; flatten, because a
+        # Outputs are grouped per node then per history key; flatten, because a
         # caller only cares which files came out.
         items = []
         for node_out in entry.get("outputs", {}).values():
-            for kind, files in node_out.items():
+            for key, files in node_out.items():
                 if not isinstance(files, list):
                     continue
-                items += [{**f, "kind": kind} for f in files
+                items += [{**f, "kind": media_kind(f["filename"], key),
+                           "comfy_key": key}
+                          for f in files
                           if isinstance(f, dict) and "filename" in f]
         return elapsed, items
 
