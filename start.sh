@@ -24,13 +24,32 @@ if [ -d "/runpod-volume" ] && [ ! -e "/workspace" ]; then
     NETWORK_VOLUME=true
 elif [ -d "/workspace" ]; then
     NETWORK_VOLUME=true
-    echo "[OK] Volume detected at /workspace"
+    echo "[OK] Writable /workspace detected"
 else
     mkdir -p /workspace
     echo "[WARN] No network volume - using container storage."
     echo "       MiniMax H3 needs up to 63 GB and will not fit here."
 fi
 export NETWORK_VOLUME
+
+# NETWORK_VOLUME only means "something writable is mounted at /workspace" - it
+# cannot tell a RunPod network volume from the host's local docker LV, and both
+# look identical in the log. The difference is not cosmetic: local storage dies
+# with the pod, so the 42 GB of weights and the Triton cache are re-paid on
+# every deploy, and its ceiling is usually too low for a second model set.
+# Print what it actually is and let the operator judge.
+if [ "$NETWORK_VOLUME" = "true" ]; then
+    df -h --output=source,fstype,size,avail /workspace 2>/dev/null | tail -1 | \
+        while read -r src fstype size avail; do
+            echo "     ${src}  ${fstype}  ${size} total, ${avail} free"
+        done
+    case "$(df --output=source /workspace 2>/dev/null | tail -1)" in
+        *docker*|/dev/mapper/*|/dev/sd*|/dev/nvme*|overlay*)
+            echo "     [NOTE] This looks like local pod storage, not a network"
+            echo "            volume. Weights and the Triton cache will not"
+            echo "            survive this pod." ;;
+    esac
+fi
 
 mkdir -p "$DATA_DIR"/{models,input,output,user,custom_nodes}
 
