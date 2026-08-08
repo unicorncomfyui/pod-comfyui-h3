@@ -425,6 +425,11 @@ def process(job: dict, template: dict, template_name: str,
         log(f"  saved {dest.name} ({size / 1e6:.1f} MB)")
 
     result = {
+        # Schema marker. runs.jsonl is append-only, so it outlives the code
+        # that wrote its older lines: a reader hit KeyError on trace_id the
+        # day after the field was added. Consumers should branch on this
+        # rather than assume every line matches the newest shape.
+        "v": 1,
         "id": job_id,
         "run_id": run_id,
         "trace_id": trace_id,
