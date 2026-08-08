@@ -35,6 +35,7 @@ evicts it - and on a small pod it triggers the OOM killer instead.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -90,6 +91,17 @@ _KIND_BY_SUFFIX = {
 
 def media_kind(filename: str, comfy_key: str) -> str:
     return _KIND_BY_SUFFIX.get(Path(filename).suffix.lower(), comfy_key)
+
+
+def fingerprint(template: dict) -> str:
+    """Short stable digest of a template.
+
+    Recorded on every run so a change in output quality can be attributed to
+    the graph rather than argued about. Keys are sorted, so a re-export that
+    only reorders nodes still fingerprints the same.
+    """
+    canonical = json.dumps(template, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +193,8 @@ def fetch_output(item: dict, dest: Path) -> Path:
     return dest
 
 
-def submit_and_wait(graph: dict, timeout: int = 3600) -> tuple[float, list[dict]]:
-    """Queue a prompt, block until it finishes, return (seconds, output items).
+def submit_and_wait(graph: dict, timeout: int = 3600) -> tuple[float, list[dict], str]:
+    """Queue a prompt, block until it finishes, return (seconds, outputs, id).
 
     The duration comes from ComfyUI's own execution_start/execution_success
     stamps rather than wall clock, so a queue wait behind another job is not
@@ -223,7 +235,7 @@ def submit_and_wait(graph: dict, timeout: int = 3600) -> tuple[float, list[dict]
                            "comfy_key": key}
                           for f in files
                           if isinstance(f, dict) and "filename" in f]
-        return elapsed, items
+        return elapsed, items, prompt_id
 
     raise TimeoutError(f"{prompt_id} did not finish within {timeout}s")
 
@@ -358,9 +370,22 @@ class FileSource:
 
 
 # ---------------------------------------------------------------------------
-def process(job: dict, template: dict, outbox: Path, dry_run: bool) -> dict:
+def process(job: dict, template: dict, template_name: str,
+            outbox: Path, dry_run: bool) -> dict:
     job_id = job["id"]
-    log(f"[JOB] {job_id}")
+
+    # Three identifiers, because they answer three different questions.
+    #
+    #   job_id    what was asked for. Reused on purpose - "t1" ran five times.
+    #   run_id    this execution. Unique, so a metric can be attached to it.
+    #   trace_id  the whole request, enrichment included. Taken from the job
+    #             when the caller set one, so the LLM step upstream and this
+    #             generation land in ONE trace instead of two unrelated ones.
+    #             Minting it here when absent keeps single runs traceable too.
+    run_id = uuid.uuid4().hex
+    trace_id = job.get("trace_id") or run_id
+
+    log(f"[JOB] {job_id}  run={run_id[:8]}")
     out_dir = outbox / job_id
 
     comfy_image = None
@@ -385,7 +410,8 @@ def process(job: dict, template: dict, outbox: Path, dry_run: bool) -> dict:
         log(f"  graph written to {out_dir / 'graph.dry-run.json'} (not queued)")
         return {"id": job_id, "dry_run": True, "applied": applied}
 
-    elapsed, items = submit_and_wait(graph)
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    elapsed, items, prompt_id = submit_and_wait(graph)
     log(f"  done in {elapsed:.2f}s, {len(items)} file(s)")
 
     # SEAM: an object-store upload replaces this loop. The manifest below is
@@ -400,10 +426,19 @@ def process(job: dict, template: dict, outbox: Path, dry_run: bool) -> dict:
 
     result = {
         "id": job_id,
+        "run_id": run_id,
+        "trace_id": trace_id,
+        # ComfyUI's own key for this execution. It is what the pod's log lines
+        # carry, so it is the only way to join this record to /var/log.
+        "prompt_id": prompt_id,
+        "template": {"name": template_name, "sha": fingerprint(template)},
         "status": "ok",
         "seconds": round(elapsed, 2),
         "applied": applied,
         "outputs": saved,
+        # Both ends, not just the finish: a span needs a start, and the gap
+        # between started_at and seconds is the queue wait.
+        "started_at": started_at,
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     (out_dir / "result.json").write_text(
@@ -485,7 +520,7 @@ def main() -> int:
             return 1
         job.setdefault("id", job_path.stem)
         try:
-            process(job, template, outbox, args.dry_run)
+            process(job, template, template_path.name, outbox, args.dry_run)
         except Exception as e:  # noqa: BLE001 - single job: report, exit non-zero
             log(f"[ERROR] {job['id']}: {type(e).__name__}: {e}")
             return 1
@@ -505,7 +540,7 @@ def main() -> int:
 
         job, held = claimed
         try:
-            process(job, template, outbox, args.dry_run)
+            process(job, template, template_path.name, outbox, args.dry_run)
             source.done(held)
         except Exception as e:  # noqa: BLE001 - one bad job must not stop the loop
             log(f"[ERROR] {job['id']}: {type(e).__name__}: {e}")
