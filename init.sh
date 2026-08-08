@@ -126,26 +126,81 @@ df -h / /workspace 2>/dev/null || df -h /
 
 echo ""
 echo "--- PyTorch / CUDA ---"
-python - <<'PY' || echo "[ERROR] Python diagnostics failed"
+# This block decides whether the pod boots. The driver-version check above is a
+# proxy; this is the outcome. It covers every way a GPU goes missing at once -
+# an old driver, an empty CUDA_VISIBLE_DEVICES that hides all devices, a broken
+# runtime injection on a community host, a driver updated under a running
+# container. All of them end here, and torch is the only thing that can tell.
+CUDA_OK=true
+python - <<'PY' || CUDA_OK=false
 import sys
 print(f"Python: {sys.version.split()[0]}")
 try:
     import torch
-    print(f"torch:  {torch.__version__}")
-    print(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"CUDA (torch): {torch.version.cuda}")
-        print(f"cuDNN: {torch.backends.cudnn.version()}")
-        for i in range(torch.cuda.device_count()):
-            p = torch.cuda.get_device_properties(i)
-            print(f"GPU {i}: {p.name} | sm_{p.major}{p.minor} | {p.total_memory/1024**3:.1f} GB")
-    else:
-        import os
-        print("[ERROR] CUDA is not available to PyTorch")
-        print(f"LD_LIBRARY_PATH: {os.environ.get('LD_LIBRARY_PATH', 'unset')}")
 except Exception as e:
-    print(f"[ERROR] torch check failed: {e}")
+    print(f"[ERROR] torch import failed: {e}")
+    sys.exit(1)
+
+print(f"torch:  {torch.__version__}")
+print(f"CUDA available: {torch.cuda.is_available()}")
+
+if not torch.cuda.is_available():
+    import os
+    print("[ERROR] CUDA is not available to PyTorch")
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is not None:
+        # An empty value is not "unset": it hides every device from CUDA while
+        # leaving nvidia-smi perfectly happy, which is a confusing place to end.
+        shown = repr(cvd) if cvd.strip() == "" else cvd
+        print(f"CUDA_VISIBLE_DEVICES is set to {shown}")
+    print(f"LD_LIBRARY_PATH: {os.environ.get('LD_LIBRARY_PATH', 'unset')}")
+    sys.exit(1)
+
+print(f"CUDA (torch): {torch.version.cuda}")
+print(f"cuDNN: {torch.backends.cudnn.version()}")
+for i in range(torch.cuda.device_count()):
+    p = torch.cuda.get_device_properties(i)
+    print(f"GPU {i}: {p.name} | sm_{p.major}{p.minor} | {p.total_memory/1024**3:.1f} GB")
+
+# is_available() only enumerates. User-space libraries that no longer match the
+# loaded kernel module - a host driver updated under a running container - can
+# enumerate a healthy GPU and then fail on the first real kernel, which is a
+# generation fifteen minutes from now. Launch one here instead: the .item()
+# forces a synchronisation, so an async launch failure surfaces now.
+try:
+    t = torch.randn(64, 64, device="cuda")
+    float((t @ t).sum().item())
+    print("CUDA smoke test: ok")
+except Exception as e:
+    print(f"[ERROR] CUDA enumerates but cannot execute: {e}")
+    sys.exit(1)
 PY
+
+if [ "$CUDA_OK" != "true" ]; then
+    echo ""
+    echo "=============================================================="
+    echo "[FATAL] PyTorch cannot use a GPU on this host."
+    echo ""
+    echo "  nvidia-smi may still look perfectly healthy - it does not go"
+    echo "  through the CUDA runtime. Check, in this order:"
+    echo ""
+    echo "    env | grep -i cuda      an EMPTY CUDA_VISIBLE_DEVICES hides"
+    echo "                            every device; unset it, do not set it to 0"
+    echo "    ls /dev/nvidia*         nvidia-uvm missing breaks CUDA alone"
+    echo "    redeploy elsewhere      a host driver updated under a running"
+    echo "                            container leaves libs and module mismatched"
+    echo ""
+    echo "  Refusing to boot: the pod would pull 42 GB of weights and start"
+    echo "  ComfyUI, then fail on the first generation."
+    echo ""
+    echo "  Set ALLOW_DRIVER_MISMATCH=true to boot anyway (CPU only)."
+    echo "=============================================================="
+    echo ""
+    if [ "${ALLOW_DRIVER_MISMATCH:-false}" != "true" ]; then
+        exit 1
+    fi
+    echo "[WARN] ALLOW_DRIVER_MISMATCH=true - continuing without a usable GPU"
+fi
 
 echo ""
 echo "--- MiniMax H3 runtime stack ---"
