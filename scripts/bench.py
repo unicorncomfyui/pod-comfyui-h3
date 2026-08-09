@@ -80,8 +80,25 @@ def api(path: str, payload: dict | None = None) -> dict:
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read() or "{}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read() or "{}")
+    except urllib.error.HTTPError as e:
+        # /prompt refuses a graph with a 400 whose BODY carries the reason -
+        # which node, which input. Letting the exception through printed a
+        # bare "HTTP Error 400: Bad Request" and sent you reading tracebacks
+        # for something ComfyUI had already explained.
+        body = e.read().decode("utf-8", "replace")
+        log(f"[ERROR] {path} -> {e.code}")
+        try:
+            err = json.loads(body).get("error", {})
+            log(f"        {err.get('type', '?')}: {err.get('message', body[:300])}")
+            for d in json.loads(body).get("node_errors", {}).values():
+                for m in d.get("errors", []):
+                    log(f"        {m.get('details', m)}")
+        except json.JSONDecodeError:
+            log(f"        {body[:400]}")
+        raise
 
 
 def wait_ready(proc: subprocess.Popen, timeout: int = 300) -> bool:
