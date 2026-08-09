@@ -146,6 +146,18 @@ jobs:
           echo "name=$(basename "$WHEEL")" >> "$GITHUB_OUTPUT"
           echo "sha=$(cat dist/UPSTREAM_SHA.txt)" >> "$GITHUB_OUTPUT"
 
+      # Keep the wheel before trying to publish it. Half an hour of nvcc is
+      # too expensive to lose to a failure in a step that comes after - which
+      # is exactly what happened the first time this ran. The artifact is
+      # downloadable from the run page even when the release upload fails.
+      - name: Keep the wheel as a run artifact
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sageattention-${{ matrix.target }}
+          path: dist/*
+          retention-days: 30
+
       # One release per CUDA target rather than one shared release. The wheel
       # keeps the exact filename setup.py produced, because pip parses that
       # name segment by segment and refuses anything appended to it - so the
@@ -156,6 +168,12 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh infers the repository from the git remote of the working
+          # directory, and this job never checks the repository out - it has no
+          # need of the sources. Naming it explicitly is what makes that
+          # deliberate rather than an omission; without it gh fails on "not a
+          # git repository", which points at the wrong problem entirely.
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: wheels-${{ matrix.target }}
         run: |
           gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
