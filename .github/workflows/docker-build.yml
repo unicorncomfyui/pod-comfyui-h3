@@ -38,12 +38,18 @@ jobs:
             cuda_base: 13.3.1-cudnn-runtime-ubuntu24.04
             torch_index: cu130
             primary: true
+            # Filled in from the summary of the "Build SageAttention wheel"
+            # workflow. Left empty until that has run once: the build then
+            # succeeds without it and attention stays on PyTorch, rather than
+            # failing on a 404 for a wheel nobody has compiled yet.
+            sa_wheel: ''
           # Safety net for the large part of the RunPod fleet still on 12.x
           # drivers. Same torch version, older CUDA runtime.
           - target: cu129
             cuda_base: 12.9.2-cudnn-runtime-ubuntu24.04
             torch_index: cu129
             primary: false
+            sa_wheel: ''
 
     steps:
       - name: Skip target if not selected
@@ -128,6 +134,7 @@ jobs:
           build-args: |
             CUDA_BASE=${{ matrix.cuda_base }}
             TORCH_INDEX=${{ matrix.torch_index }}
+            SAGEATTENTION_WHEEL=${{ matrix.sa_wheel }}
           # Registry cache, not type=gha: the GitHub Actions cache is capped at
           # 10 GB per repository, and this image's layers run to ~15 GB per
           # target. Two targets against a shared 10 GB budget would evict each

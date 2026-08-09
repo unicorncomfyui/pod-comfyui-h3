@@ -1,0 +1,189 @@
+name: Build SageAttention wheel
+
+# Compiles SageAttention 2.x into a wheel and publishes it as a release asset,
+# so the image can install it without a compiler.
+#
+# WHY THIS IS A SEPARATE WORKFLOW, run by hand, and not a stage of the image
+# build. Three reasons, in order of weight:
+#
+#   1. The Dockerfile's stated invariant is that it compiles NOTHING at build
+#      time - that is why it is based on -runtime and installs gcc alone. A
+#      builder stage would need the -devel base and a second copy of torch,
+#      roughly 10 GB more on a runner that already has to free 25 GB to fit.
+#   2. The wheel only changes when torch, CUDA or Python changes, which is
+#      almost never. Paying half an hour of nvcc on every image build - and
+#      every image build happens on every push - buys nothing.
+#   3. A wheel is an artefact with an identity. Published once, with the
+#      upstream SHA recorded next to it, it is the same bytes on every future
+#      image. Rebuilt inside each image, it is a fresh gamble each time.
+#
+# No GPU is needed to compile: nvcc cross-compiles for the target architecture,
+# which TORCH_CUDA_ARCH_LIST names. The runner never runs the kernels.
+#
+# After a successful run, take the URL printed in the job summary and put it in
+# the matrix of docker-build.yml. That is one manual step, once per torch bump.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'SageAttention git ref (branch, tag or SHA)'
+        default: 'main'
+        type: string
+      targets:
+        description: 'Which CUDA targets to build'
+        type: choice
+        default: all
+        options: [all, cu130, cu129]
+
+env:
+  # Must match the Dockerfile. A wheel built against a different torch links
+  # against a different libtorch ABI and fails at import with "undefined
+  # symbol", which names a C++ mangled function and not the real problem.
+  TORCH_VERSION: '2.13.0'
+  PYTHON_VERSION: '3.13'
+  # RTX 5090, Blackwell. Building for one architecture keeps the compile down
+  # to something a 4-core runner finishes; every extra arch is another full
+  # pass of nvcc over the same kernels.
+  CUDA_ARCH: '12.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # needed to create the release and upload assets
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: cu130
+            cuda_devel: 13.3.1-cudnn-devel-ubuntu24.04
+            torch_index: cu130
+          - target: cu129
+            cuda_devel: 12.9.2-cudnn-devel-ubuntu24.04
+            torch_index: cu129
+
+    steps:
+      - name: Skip target if not selected
+        id: gate
+        run: |
+          SEL="${{ github.event.inputs.targets }}"
+          if [ -z "$SEL" ] || [ "$SEL" = "all" ] || [ "$SEL" = "${{ matrix.target }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A -devel base plus torch does not fit in the ~14 GB a runner ships
+      # with. Same cleanup as the image build.
+      - name: Free up disk space
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/share/swift \
+                      /usr/local/.ghcup /usr/local/share/boost \
+                      /usr/local/graalvm /usr/local/share/chromium \
+                      /usr/local/share/powershell
+          df -h /
+
+      # Deliberately `docker run` rather than the job-level `container:` key.
+      # With `container:`, every step runs inside it - including the cleanup
+      # above, which would then delete paths in the container instead of on
+      # the host and free nothing at all.
+      - name: Compile the wheel
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          mkdir -p dist
+          docker run --rm -v "$PWD/dist:/dist" \
+            -e SA_REF="${{ github.event.inputs.ref || 'main' }}" \
+            -e TORCH_VERSION="${TORCH_VERSION}" \
+            -e TORCH_INDEX="${{ matrix.torch_index }}" \
+            -e PYTHON_VERSION="${PYTHON_VERSION}" \
+            -e TORCH_CUDA_ARCH_LIST="${CUDA_ARCH}" \
+            nvidia/cuda:${{ matrix.cuda_devel }} bash -eux -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                  software-properties-common ca-certificates git curl \
+                  build-essential ninja-build
+              add-apt-repository ppa:deadsnakes/ppa -y
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                  python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
+                  python${PYTHON_VERSION}-dev
+
+              python${PYTHON_VERSION} -m venv /opt/venv
+              export PATH=/opt/venv/bin:/usr/local/cuda/bin:$PATH
+              pip install --no-cache-dir -U pip setuptools wheel packaging ninja
+
+              # Same torch as the image, from the same index. This is the whole
+              # point of the exercise - the ABI has to match exactly.
+              pip install --no-cache-dir "torch==${TORCH_VERSION}" \
+                  --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}"
+
+              git clone https://github.com/thu-ml/SageAttention.git /src
+              cd /src
+              git checkout "${SA_REF}"
+              git rev-parse HEAD > /dist/UPSTREAM_SHA.txt
+
+              # nvcc is the bottleneck and it parallelises badly on its own.
+              export MAX_JOBS=4 EXT_PARALLEL=4 NVCC_APPEND_FLAGS="--threads 4"
+              # --no-build-isolation so the build sees the torch we just
+              # installed; with isolation pip would fetch its own from PyPI,
+              # for the wrong CUDA, and the wheel would be useless.
+              pip wheel . --no-build-isolation --no-deps -w /dist
+
+              ls -la /dist
+            '
+
+      - name: Identify the artefact
+        if: steps.gate.outputs.run == 'true'
+        id: whl
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          echo "path=$WHEEL" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$WHEEL")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(cat dist/UPSTREAM_SHA.txt)" >> "$GITHUB_OUTPUT"
+
+      # One release per CUDA target rather than one shared release. The wheel
+      # keeps the exact filename setup.py produced, because pip parses that
+      # name segment by segment and refuses anything appended to it - so the
+      # cu130 and cu129 wheels are very likely to be called the same thing.
+      # Separating them by release tag disambiguates in the URL, which is
+      # where a human will actually look, and leaves the file untouched.
+      - name: Publish as a release asset
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: wheels-${{ matrix.target }}
+        run: |
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
+            gh release create "${RELEASE_TAG}" \
+              --title "Prebuilt wheels (${{ matrix.target }})" \
+              --notes "SageAttention compiled for torch ${TORCH_VERSION}+${{ matrix.torch_index }}, Python ${PYTHON_VERSION}, sm_${CUDA_ARCH}. No such wheel is published upstream for Linux - see .github/workflows/sageattention-wheel.yml."
+          gh release upload "${RELEASE_TAG}" "${{ steps.whl.outputs.path }}" --clobber
+
+      - name: Summary
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RELEASE_TAG: wheels-${{ matrix.target }}
+        run: |
+          URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${{ steps.whl.outputs.name }}"
+          {
+            echo "## ${{ matrix.target }} wheel"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Upstream SHA | \`${{ steps.whl.outputs.sha }}\` |"
+            echo "| torch | \`${TORCH_VERSION}+${{ matrix.torch_index }}\` |"
+            echo "| Python | \`${PYTHON_VERSION}\` |"
+            echo "| Arch | \`sm_${CUDA_ARCH/./}\` |"
+            echo ""
+            echo "Put this in the \`sa_wheel\` field of the ${{ matrix.target }} row"
+            echo "in \`.github/workflows/docker-build.yml\`:"
+            echo ""
+            echo "\`\`\`"
+            echo "$URL"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

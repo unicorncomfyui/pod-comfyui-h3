@@ -204,6 +204,43 @@ RUN pip install --no-cache-dir --upgrade "pillow>=12.3.0,<13" setuptools \
     && rm -rf /root/.cache/*
 
 # ---------------------------------------------------------------------------
+# 6b - SageAttention, optional and prebuilt.
+#
+# INT8-quantised attention. Measured on this exact stack, against the standard
+# implementation, same seed, same graph:
+#
+#   0.88 MP / 12 steps   148.20 s -> 104.21 s   (-29.7%)
+#   0.40 MP /  6 steps    24.39 s ->  19.42 s   (-20.4%)
+#
+# The gain grows with size because attention is quadratic in latent tokens
+# while everything else is linear: it is 59% of the clock at 0.88 MP and 41%
+# at 0.40 MP, and Sage halves it. Enable at runtime with SAGE_ATTENTION=true;
+# nothing here turns it on.
+#
+# The URL points at a wheel WE built, because none exists for Linux: upstream
+# publishes no wheels at all, and the well-known third-party builds are
+# win_amd64 only. See .github/workflows/sageattention-wheel.yml - it compiles
+# against this same torch and CUDA, which is not optional. A wheel built for
+# another torch links against another libtorch ABI and fails at import with an
+# undefined symbol naming a mangled C++ function rather than the real cause.
+#
+# Empty by default, so a build that has not been given a wheel still produces
+# a working image - ComfyUI simply falls back to PyTorch attention and says so
+# in its log. That keeps the file's invariant intact: nothing is compiled here.
+# ---------------------------------------------------------------------------
+ARG SAGEATTENTION_WHEEL=""
+RUN if [ -n "${SAGEATTENTION_WHEEL}" ]; then \
+        echo "Installing SageAttention from ${SAGEATTENTION_WHEEL}" \
+        && curl -fsSL -o /tmp/sageattention.whl "${SAGEATTENTION_WHEEL}" \
+        && pip install --no-cache-dir /tmp/sageattention.whl \
+        && rm -f /tmp/sageattention.whl \
+        && pip show sageattention | head -2 \
+        && rm -rf /root/.cache/*; \
+    else \
+        echo "[INFO] No SAGEATTENTION_WHEEL given; attention stays on PyTorch."; \
+    fi
+
+# ---------------------------------------------------------------------------
 # 7 - Bundled assets. Model weights are NOT baked in: 64 GB of H3 lands on the
 # network volume at first boot.
 # ---------------------------------------------------------------------------
