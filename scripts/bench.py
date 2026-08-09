@@ -61,6 +61,12 @@ CONFIGS: dict[str, list[str]] = {
     "lru": ["--cache-lru", "10"],
     "offload4": ["--async-offload", "4"],
     "offload8": ["--async-offload", "8"],
+    # Needs the sageattention package; ComfyUI falls back to PyTorch attention
+    # and says so if it is missing, so this config degrades to a second
+    # baseline rather than failing. Measure it at 0.88 MP: attention cost grows
+    # as pixels^1.84, so at 0.4 MP most of the clock is elsewhere and the
+    # comparison answers a question you are not asking.
+    "sage": ["--use-sage-attention"],
 }
 
 

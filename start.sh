@@ -266,6 +266,14 @@ fi
 # PCIe, so offload bandwidth is a plausible bottleneck worth probing.
 [ -n "${ASYNC_OFFLOAD_STREAMS}" ] && COMFYUI_ARGS+=(--async-offload "${ASYNC_OFFLOAD_STREAMS}")
 
+# SAGE_ATTENTION: INT8-quantised attention, ~2x on the attention blocks. Off
+# by default and deliberately: MiniMax H3 runs several layers in dtypes Sage
+# refuses, and those fall back to PyTorch attention with a console message. The
+# net gain on H3 is therefore not the advertised factor - it has to be measured
+# at 0.88 MP, where attention dominates the clock, not at 0.4 MP where it does
+# not. If the sageattention package is absent, ComfyUI says so and carries on.
+[ "${SAGE_ATTENTION:-false}" = "true" ] && COMFYUI_ARGS+=(--use-sage-attention)
+
 [ "${FAST_DISK:-false}" = "true" ] && COMFYUI_ARGS+=(--fast-disk)
 [ -n "${VRAM_HEADROOM}" ] && COMFYUI_ARGS+=(--vram-headroom "${VRAM_HEADROOM}")
 [ -n "${RESERVE_VRAM}" ] && COMFYUI_ARGS+=(--reserve-vram "${RESERVE_VRAM}")
