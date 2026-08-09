@@ -228,17 +228,39 @@ RUN pip install --no-cache-dir --upgrade "pillow>=12.3.0,<13" setuptools \
 # a working image - ComfyUI simply falls back to PyTorch attention and says so
 # in its log. That keeps the file's invariant intact: nothing is compiled here.
 # ---------------------------------------------------------------------------
+# No `#` inside the RUN below. Docker joins continuation lines into a single
+# command, and whether a commented line is stripped by the parser or handed to
+# the shell decides between a no-op and commenting out everything after it.
+# Explanation belongs here, where that question does not arise.
+#
+# `set -eu` plus one statement per line, each announcing itself: a chain of &&
+# reports only "exit code 1" for whichever link broke, and on a twelve-minute
+# build that costs a round trip per guess. The zip check exists because a 404
+# or an HTML error page is still a file, and pip describes such a thing badly.
+#
+# The download KEEPS the wheel's own filename. pip parses that name for the
+# five segments name-version-python-abi-platform, and refuses anything else -
+# saving it as sageattention.whl earned exactly that: "Invalid wheel filename
+# (wrong number of parts)". A wheel's name is metadata, not decoration.
 ARG SAGEATTENTION_WHEEL=""
-RUN if [ -n "${SAGEATTENTION_WHEEL}" ]; then \
-        echo "Installing SageAttention from ${SAGEATTENTION_WHEEL}" \
-        && curl -fsSL -o /tmp/sageattention.whl "${SAGEATTENTION_WHEEL}" \
-        && pip install --no-cache-dir /tmp/sageattention.whl \
-        && rm -f /tmp/sageattention.whl \
-        && pip show sageattention | head -2 \
-        && rm -rf /root/.cache/*; \
-    else \
+RUN set -eu; \
+    if [ -z "${SAGEATTENTION_WHEEL}" ]; then \
         echo "[INFO] No SAGEATTENTION_WHEEL given; attention stays on PyTorch."; \
-    fi
+        exit 0; \
+    fi; \
+    mkdir -p /tmp/whl; \
+    WHL="/tmp/whl/$(basename "${SAGEATTENTION_WHEEL}")"; \
+    echo "==> downloading ${SAGEATTENTION_WHEEL}"; \
+    curl -fSL --retry 3 -o "${WHL}" "${SAGEATTENTION_WHEEL}"; \
+    echo "==> downloaded $(stat -c%s "${WHL}") bytes as $(basename "${WHL}")"; \
+    python -c "import zipfile,sys; sys.exit(0 if zipfile.is_zipfile(sys.argv[1]) else 1)" "${WHL}" \
+        || { echo "[ERROR] not a wheel:"; head -c 400 "${WHL}"; exit 1; }; \
+    echo "==> installing"; \
+    pip install --no-cache-dir "${WHL}"; \
+    rm -rf /tmp/whl; \
+    echo "==> installed:"; \
+    pip show sageattention | head -2; \
+    rm -rf /root/.cache/*
 
 # ---------------------------------------------------------------------------
 # 7 - Bundled assets. Model weights are NOT baked in: 64 GB of H3 lands on the
