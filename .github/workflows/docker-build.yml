@@ -38,11 +38,19 @@ jobs:
             cuda_base: 13.3.1-cudnn-runtime-ubuntu24.04
             torch_index: cu130
             primary: true
-            # Filled in from the summary of the "Build SageAttention wheel"
-            # workflow. Left empty until that has run once: the build then
-            # succeeds without it and attention stays on PyTorch, rather than
-            # failing on a 404 for a wheel nobody has compiled yet.
-            sa_wheel: ''
+            # Built by the "Build SageAttention wheel" workflow, from
+            # thu-ml/SageAttention against this exact torch, CUDA and Python.
+            # No such wheel is published for Linux anywhere upstream.
+            #
+            # The filename records python and platform but NOT which torch or
+            # CUDA it was compiled against - pip cannot check that, and a
+            # mismatch surfaces as an undefined symbol at import time. The
+            # release tag carries it instead: wheels-cu130.
+            #
+            # Re-run that workflow after any torch or Python bump, and update
+            # this URL. Leaving a stale wheel here is worse than leaving it
+            # empty: empty degrades to PyTorch attention, stale breaks import.
+            sa_wheel: 'https://github.com/unicorncomfyui/pod-comfyui-h3/releases/download/wheels-cu130/sageattention-2.2.0-cp313-cp313-linux_x86_64.whl'
           # Safety net for the large part of the RunPod fleet still on 12.x
           # drivers. Same torch version, older CUDA runtime.
           - target: cu129
