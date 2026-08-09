@@ -96,8 +96,18 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           # Every tag carries the CUDA target, so cu130 and cu129 images can
           # never overwrite each other. Only cu130 claims the bare aliases.
+          #
+          # The bare `cu130` tag is a MOVING alias that pods pull by name, so
+          # only main may move it. Left unguarded it was written by both
+          # branches alike, which meant pushing a work-in-progress to develop
+          # silently replaced what production pulls on its next pod start -
+          # with nothing in the logs to connect the two. `latest` was already
+          # protected this way; this closes the same hole one tag lower.
+          #
+          # develop still publishes cu130-develop and the immutable
+          # cu130-<date>-<sha>, which is what a test pod should point at.
           tags: |
-            type=raw,value=${{ matrix.target }}
+            type=raw,value=${{ matrix.target }},enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ matrix.target }}-{{branch}}
             type=raw,value=${{ matrix.target }}-{{branch}}-{{sha}}
             type=raw,value=${{ matrix.target }}-{{date 'YYYYMMDD'}}-{{sha}}
