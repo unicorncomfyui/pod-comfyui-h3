@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import statistics
 import subprocess
@@ -302,6 +303,19 @@ def set_input(workflow: dict, name: str, value) -> int:
     return n
 
 
+def label_outputs(workflow: dict, label: str) -> None:
+    """Name the files after the point that produced them.
+
+    Every run otherwise lands under the template's own prefix, so a sweep
+    leaves a pile of `MiniMax_H3_00042.mp4` and the only way to tell which
+    setting made which clip is the modification time. That turns the visual
+    half of a benchmark - the half that actually decides anything - into
+    guesswork.
+    """
+    safe = re.sub(r"[^A-Za-z0-9.=-]+", "_", label).strip("_") or "run"
+    set_input(workflow, "filename_prefix", f"bench/{safe}/{safe}")
+
+
 def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
     """'steps=8,12,20' -> ('steps', [8, 12, 20]), numbers kept numeric."""
     out = []
@@ -383,6 +397,7 @@ def sweep_in_instance(workflow: dict, sweeps: list[tuple[str, list]],
             continue
 
         log(f"\n--- {label} ---")
+        label_outputs(wf, label)
         times = []
         for i in range(reps + 1):
             force_seed(wf, BASE_SEED + i)
@@ -427,6 +442,7 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
         if sweeps:
             return sweep_in_instance(workflow, sweeps, reps)
 
+        label_outputs(workflow, label)
         times: list[float] = []
         # +1: the first run pays model staging and any cold Triton kernels.
         # It is measured and shown, then dropped from the statistics.
