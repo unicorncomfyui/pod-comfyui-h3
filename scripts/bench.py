@@ -337,24 +337,54 @@ def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
     return out
 
 
-def vram_used_mb() -> float | None:
-    """VRAM in use on the first device, right now, in MB.
+class VramWatch:
+    """Peak VRAM across a run, sampled by nvidia-smi at 200 ms.
 
-    Total minus free rather than torch's own accounting: the offloader, the
-    VAE and anything else on the card all count against the 32 GB, and a peak
-    that excludes them would understate exactly the pressure being measured.
+    The first version polled /system_stats inside the one-second loop that
+    watches the queue. It was free, and it was too coarse: repeated runs of
+    the SAME configuration reported peaks 1-2 GB apart, while the effect being
+    measured - the upstream H3 VAE rework - is worth about 3.5 GB. An
+    instrument whose noise is half the signal cannot settle the question.
+
+    nvidia-smi in its own process at 200 ms costs nothing on the GPU, does not
+    contend for the GIL, and does not add HTTP load to the server being timed.
+    Total used on the device, not torch's accounting: the offloader and the
+    VAE both count against the same 32 GB.
+
+    Still a high-water mark of what was SEEN. A spike shorter than 200 ms can
+    hide - but VAE decode, the phase this measures, lasts seconds.
     """
-    try:
-        dev = (api("/system_stats") or {}).get("devices") or []
-        if not dev:
+
+    def __init__(self) -> None:
+        self.proc = None
+
+    def __enter__(self):
+        try:
+            self.proc = subprocess.Popen(
+                ["nvidia-smi", "--query-gpu=memory.used",
+                 "--format=csv,noheader,nounits", "-lms", "200"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        except Exception:  # noqa: BLE001 - instrumentation never fails a run
+            self.proc = None
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    def peak_mb(self) -> float | None:
+        if not self.proc:
             return None
-        d = dev[0]
-        total, free = d.get("vram_total"), d.get("vram_free")
-        if total is None or free is None:
+        try:
+            self.proc.terminate()
+            out, _ = self.proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                self.proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
             return None
-        return (total - free) / (1024 * 1024)
-    except Exception:  # noqa: BLE001 - never let instrumentation fail a run
-        return None
+        vals = [float(x) for x in (out or "").split() if x.strip().isdigit()]
+        return max(vals) if vals else None
 
 
 # Peak seen during the last run_prompt(), in MB. A module global because
@@ -373,13 +403,18 @@ def run_prompt(workflow: dict) -> float | None:
     """
     global PEAK_VRAM_MB
     PEAK_VRAM_MB = None
+    watch = VramWatch().__enter__()
+    try:
+        return _run_prompt(workflow)
+    finally:
+        PEAK_VRAM_MB = watch.peak_mb()
+
+
+def _run_prompt(workflow: dict) -> float | None:
     prompt_id = api("/prompt", {"prompt": workflow})["prompt_id"]
 
     while True:
         time.sleep(1)
-        used = vram_used_mb()
-        if used is not None:
-            PEAK_VRAM_MB = used if PEAK_VRAM_MB is None else max(PEAK_VRAM_MB, used)
         hist = api(f"/history/{prompt_id}")
         entry = hist.get(prompt_id)
         if not entry:
@@ -650,8 +685,9 @@ def main() -> int:
 
     log("\nRead spread before believing a delta: if it exceeds the difference")
     log("between two configs, you measured noise, not an improvement.")
-    log("Peak VRAM is sampled once a second, so it is a high-water mark of what")
-    log("was seen rather than a proven maximum - a sub-second spike can hide.")
+    log("Peak VRAM is sampled at 200 ms - a high-water mark of what was seen,")
+    log("not a proven maximum. It IS comparable between pods: the same card and")
+    log("the same weights use the same memory, whatever the host does.")
     log("Absolute times belong to THIS pod - two 5090s here differed by 20%.")
     log("Compare configs within one run; carry ratios between pods, not seconds.")
     log("--fast features can degrade quality - watch the video, not just the clock.")
