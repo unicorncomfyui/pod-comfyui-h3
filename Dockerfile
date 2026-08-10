@@ -156,7 +156,7 @@ RUN git clone --filter=blob:none https://github.com/Comfy-Org/ComfyUI.git comfyu
 # ---------------------------------------------------------------------------
 WORKDIR /app/comfyui/custom_nodes
 RUN git clone --filter=blob:none https://github.com/Comfy-Org/ComfyUI-Manager.git \
-    && git -C ComfyUI-Manager checkout -q d47c9346190397e1c316bc5a82155faaf9f5d700 \
+    && git -C ComfyUI-Manager checkout -q 97421c49658aaa8cf6e64736a8cb21697db3f866 \
     && git clone --filter=blob:none https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
     && git -C ComfyUI-VideoHelperSuite checkout -q 4ee72c065db22c9d96c2427954dc69e7b908444b \
     && git clone --filter=blob:none https://github.com/kijai/ComfyUI-KJNodes.git \
