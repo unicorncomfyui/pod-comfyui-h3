@@ -169,7 +169,7 @@ RUN git clone --filter=blob:none https://github.com/Comfy-Org/ComfyUI-Manager.gi
     && git -C cg-use-everywhere checkout -q 50ae9f8c5d8b9538589663c90a15d4067a02969c \
     # Sampler for the step-distillation LoRA: 4 steps instead of 12.
     && git clone --filter=blob:none https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo.git \
-    && git -C ComfyUI-MiniMax-H3-Turbo checkout -q 96cc1ddc001617da132dd73f31cd43666bf1d8d4 \
+    && git -C ComfyUI-MiniMax-H3-Turbo checkout -q 55fee864dd7b2976b1c4ce3c3d5f7968f181409f \
     && for dir in /app/comfyui/custom_nodes/*/; do \
         if [ -f "${dir}requirements.txt" ]; then \
             pip install --no-cache-dir -r "${dir}requirements.txt" || \
