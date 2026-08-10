@@ -337,12 +337,49 @@ def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
     return out
 
 
+def vram_used_mb() -> float | None:
+    """VRAM in use on the first device, right now, in MB.
+
+    Total minus free rather than torch's own accounting: the offloader, the
+    VAE and anything else on the card all count against the 32 GB, and a peak
+    that excludes them would understate exactly the pressure being measured.
+    """
+    try:
+        dev = (api("/system_stats") or {}).get("devices") or []
+        if not dev:
+            return None
+        d = dev[0]
+        total, free = d.get("vram_total"), d.get("vram_free")
+        if total is None or free is None:
+            return None
+        return (total - free) / (1024 * 1024)
+    except Exception:  # noqa: BLE001 - never let instrumentation fail a run
+        return None
+
+
+# Peak seen during the last run_prompt(), in MB. A module global because
+# run_prompt returns one number and its callers already build rows from it.
+PEAK_VRAM_MB: float | None = None
+
+
 def run_prompt(workflow: dict) -> float | None:
-    """Queue one prompt and return ComfyUI's own execution time in seconds."""
+    """Queue one prompt and return ComfyUI's own execution time in seconds.
+
+    Also records the peak VRAM seen while it ran. The polling loop below
+    already wakes every second, so sampling there is free - but a spike
+    shorter than a second can be missed. VAE decode, the phase this project
+    cares about, lasts several seconds, so it is seen; treat the number as a
+    high-water mark of what was observed, not a proven maximum.
+    """
+    global PEAK_VRAM_MB
+    PEAK_VRAM_MB = None
     prompt_id = api("/prompt", {"prompt": workflow})["prompt_id"]
 
     while True:
         time.sleep(1)
+        used = vram_used_mb()
+        if used is not None:
+            PEAK_VRAM_MB = used if PEAK_VRAM_MB is None else max(PEAK_VRAM_MB, used)
         hist = api(f"/history/{prompt_id}")
         entry = hist.get(prompt_id)
         if not entry:
@@ -398,17 +435,20 @@ def sweep_in_instance(workflow: dict, sweeps: list[tuple[str, list]],
 
         log(f"\n--- {label} ---")
         label_outputs(wf, label)
-        times = []
+        times, peaks = [], []
         for i in range(reps + 1):
             force_seed(wf, BASE_SEED + i)
             t = run_prompt(wf)
             if t is None:
                 break
             log(f"  {'warmup' if i == 0 else f'run {i}':>8}: {t:7.2f} s"
+                + (f"  peak {PEAK_VRAM_MB / 1024:.1f} GB" if PEAK_VRAM_MB else "")
                 + ("   (discarded)" if i == 0 else ""))
             if i > 0:
                 times.append(t)
-        rows.append({"label": label, "times": times})
+                if PEAK_VRAM_MB:
+                    peaks.append(PEAK_VRAM_MB)
+        rows.append({"label": label, "times": times, "peaks": peaks})
     return rows
 
 
@@ -444,6 +484,7 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
 
         label_outputs(workflow, label)
         times: list[float] = []
+        peaks: list[float] = []
         # +1: the first run pays model staging and any cold Triton kernels.
         # It is measured and shown, then dropped from the statistics.
         for i in range(reps + 1):
@@ -452,10 +493,14 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
             if t is None:
                 break
             tag = "warmup" if i == 0 else f"run {i}"
-            log(f"  {tag:>8}: {t:7.2f} s" + ("   (discarded)" if i == 0 else ""))
+            log(f"  {tag:>8}: {t:7.2f} s"
+                + (f"  peak {PEAK_VRAM_MB / 1024:.1f} GB" if PEAK_VRAM_MB else "")
+                + ("   (discarded)" if i == 0 else ""))
             if i > 0:
                 times.append(t)
-        return {"label": label, "times": times}
+                if PEAK_VRAM_MB:
+                    peaks.append(PEAK_VRAM_MB)
+        return {"label": label, "times": times, "peaks": peaks}
     finally:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         try:
@@ -577,7 +622,8 @@ def main() -> int:
     for line in hardware():
         log(line)
     log("")
-    log(f"{'config':<12} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}  vs base")
+    log(f"{'config':<12} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}"
+        f"  {'peak VRAM':>10}  vs base")
 
     base = None
     for r in results:
@@ -591,15 +637,21 @@ def main() -> int:
         else:
             pct = (med - base) / base * 100
             delta = f"{pct:+6.1f}%"
+        # Peak VRAM is the point of some changes and invisible to the clock:
+        # the H3 VAE rework upstream moved 14.6 s to 13.9 s while freeing 3.5 GB.
+        peaks = r.get("peaks") or []
+        vram = f"{max(peaks) / 1024:8.1f} GB" if peaks else f"{'-':>11}"
         # Spread wider than the effect means the result is noise.
         log(f"{r['label']:<12} {med:8.2f}s {lo:8.2f}s {hi:8.2f}s "
-            f"{(hi - lo) / med * 100:7.1f}% {delta}")
+            f"{(hi - lo) / med * 100:7.1f}% {vram} {delta}")
 
     for line in fit_steps(results):
         log(line)
 
     log("\nRead spread before believing a delta: if it exceeds the difference")
     log("between two configs, you measured noise, not an improvement.")
+    log("Peak VRAM is sampled once a second, so it is a high-water mark of what")
+    log("was seen rather than a proven maximum - a sub-second spike can hide.")
     log("Absolute times belong to THIS pod - two 5090s here differed by 20%.")
     log("Compare configs within one run; carry ratios between pods, not seconds.")
     log("--fast features can degrade quality - watch the video, not just the clock.")

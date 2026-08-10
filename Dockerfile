@@ -36,7 +36,13 @@ FROM nvidia/cuda:${CUDA_BASE}
 ARG TORCH_INDEX=cu130
 ARG TORCH_VERSION=2.13.0
 ARG PYTHON_VERSION=3.13
-ARG COMFYUI_VERSION=v0.30.0
+# A commit, not a tag, and deliberately. v0.31.0 shipped on 2026-08-08; the
+# MiniMax-H3 VAE optimisation (#15446) landed on the 9th, so no release carries
+# it yet. master is one unrelated commit ahead of this SHA, so pinning here
+# misses nothing. Six H3 fixes arrive with it that v0.30.0 never had: int8
+# convrot VAE support, the latent noise mask, audio sampler handling, the
+# device cast in the H3 VAEs, and full offload on the audio VAE.
+ARG COMFYUI_VERSION=2a68ce33
 ARG CODE_SERVER_VERSION=4.131.0
 
 LABEL maintainer="ComfyUI Pod VSCode - MiniMax H3" \
