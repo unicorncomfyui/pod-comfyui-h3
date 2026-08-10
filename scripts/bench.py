@@ -424,7 +424,22 @@ def _run_prompt(workflow: dict) -> float | None:
         if not status.get("completed") and status.get("status_str") != "error":
             continue
         if status.get("status_str") == "error":
-            log("[ERROR] Prompt failed - check the ComfyUI log")
+            # The history entry already carries the exception, the node class
+            # that raised it and a traceback. Printing "check the ComfyUI log"
+            # instead sent the reader to a spawned instance whose output is
+            # not even on screen - the answer was in hand and thrown away.
+            log("[ERROR] Prompt failed:")
+            for m in status.get("messages", []):
+                if not (isinstance(m, list) and len(m) == 2):
+                    continue
+                if m[0] != "execution_error":
+                    continue
+                d = m[1] if isinstance(m[1], dict) else {}
+                log(f"        node  {d.get('node_type', '?')} "
+                    f"(#{d.get('node_id', '?')})")
+                log(f"        error {str(d.get('exception_message', ''))[:300]}")
+                for line in (d.get("traceback") or [])[-4:]:
+                    log(f"        | {str(line).rstrip()[:160]}")
             return None
 
         # messages: [["execution_start", {"timestamp": ms}], ...]
