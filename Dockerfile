@@ -290,7 +290,13 @@ COPY scripts/worker.py /app/scripts/worker.py
 # API-format templates the worker injects into, plus a sample job. Kept out of
 # ComfyUI's own workflow directory on purpose: these are the /prompt payload
 # shape, not the editor's, and the UI would list them as broken graphs.
-COPY workflows/ /app/workflows/
+COPY workflows/*.json /app/workflows/
+# The same two graphs in editor format, staged where ComfyUI looks. start.sh
+# seeds this directory onto the volume, so they appear in the sidebar with no
+# import step. They exist because checking a change by hand was impossible
+# otherwise: an API graph has no positions and no links, so the canvas cannot
+# draw it, and the person testing had to rebuild the wiring from memory.
+COPY workflows/gui/ /app/comfyui/user/default/workflows/
 COPY examples/ /app/examples/
 COPY init.sh start.sh fetch_models.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
