@@ -69,9 +69,15 @@
       ]
     },
     "minimax-h3-turbo-lora": {
-      "description": "Step-distillation LoRA for fl2va. Runs at 4 steps instead of 12 and needs the MiniMax-H3 Turbo Sampler node, so it changes nothing until a workflow loads it. 0.78 GB, hence on by default.",
+      "description": "Step-distillation LoRA for fl2va. Runs at 6 steps instead of 12 and needs the MiniMax-H3 Turbo Sampler node, so it changes nothing until a workflow loads it. v4-600 EMA is upstream's recommended checkpoint at 6-8 steps; the v1 line it replaces over-sharpens at strength 1.0, which showed up here as grain the moment the node started applying the LoRA at run time instead of merging it into int8 weights. ckpt500 stays for rollback. 1.6 GB, hence on by default.",
       "default": true,
       "files": [
+        {
+          "repo": "larryvrh/MiniMax-H3-Turbo-Lora",
+          "path": "minimax_h3_turbo_v4_step600_ema.safetensors",
+          "dest": "loras",
+          "size_gb": 0.78
+        },
         {
           "repo": "larryvrh/MiniMax-H3-Turbo-Lora",
           "path": "minimax_h3_turbo_4step_ckpt500.safetensors",

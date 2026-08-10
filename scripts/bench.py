@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import statistics
 import subprocess
@@ -48,6 +49,156 @@ KEEP_CUSTOM_NODES = False
 
 # Base seed; repetition i runs with BASE_SEED + i. See force_seed().
 BASE_SEED = 1234
+
+# Measured on this project, by eye rather than by metric: below this the output
+# loses too much to be worth shipping, so a timing taken there describes a
+# setting nobody would use. It is a floor for BENCHMARKS, not a limit on what
+# the pipeline accepts.
+MEGAPIXEL_FLOOR = float(os.environ.get("BENCH_MEGAPIXEL_FLOOR", "0.6"))
+
+
+def _sh(cmd: list[str]) -> str:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return p.stdout.strip() if p.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 - a missing tool must not sink the run
+        return ""
+
+
+def hardware() -> list[str]:
+    """What these numbers were produced on.
+
+    Absolute timings are NOT portable between pods. Two RTX 5090s measured
+    here differed by 20% per sampling step - 2.37 s against 2.85 s - on
+    nominally identical hardware. Board partners set their own power limits
+    and fan curves, hosts differ in CPU and PCIe, and a machine can be shared.
+    That spread is larger than most changes worth testing, so a table that
+    does not say what it ran on is a table that cannot be compared to
+    anything, including itself three weeks later.
+
+    Every line is optional: this is documentation, and failing to collect it
+    must never cost a measurement.
+    """
+    out: list[str] = []
+
+    gpu = _sh(["nvidia-smi", "--format=csv,noheader",
+               "--query-gpu=name,driver_version,vbios_version,"
+               "power.max_limit,memory.total,clocks.max.sm"])
+    if gpu:
+        f = [x.strip() for x in gpu.splitlines()[0].split(",")]
+        while len(f) < 6:
+            f.append("?")
+        out.append(f"GPU        {f[0]}  {f[4]}  cap {f[3]}  max SM {f[5]}")
+        # VBIOS is the closest thing to a board-partner fingerprint that
+        # nvidia-smi exposes; two cards of the same model rarely share one.
+        out.append(f"driver     {f[1]}   vbios {f[2]}")
+
+    part = ""
+    for line in _sh(["nvidia-smi", "-q"]).splitlines():
+        if "Board Part Number" in line:
+            part = line.split(":", 1)[1].strip()
+            break
+    if part and part not in ("N/A", "Unknown"):
+        out.append(f"board      {part}")
+
+    try:
+        import torch
+        cap = ".".join(str(x) for x in torch.cuda.get_device_capability(0)) \
+            if torch.cuda.is_available() else "?"
+        out.append(f"torch      {torch.__version__}  cuda {torch.version.cuda}"
+                   f"  sm_{cap.replace('.', '')}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from importlib.metadata import version
+        out.append(f"sage       {version('sageattention')}")
+    except Exception:  # noqa: BLE001
+        out.append("sage       not installed (attention stays on PyTorch)")
+
+    try:
+        cpus = 0
+        model = ""
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("processor"):
+                cpus += 1
+            elif line.startswith("model name") and not model:
+                model = line.split(":", 1)[1].strip()
+        mem = ""
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal"):
+                mem = f"{int(line.split()[1]) / 1048576:.0f} GB"
+                break
+        # /proc shows the HOST inside a container, not what this pod was
+        # given: a 94 GB pod reported 756 GB and 224 vCPU here. The cgroup is
+        # the allocation, and the allocation is what explains a slow run.
+        quota = ""
+        try:
+            cpu_max = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+            if cpu_max[0] != "max":
+                quota = f"{int(cpu_max[0]) / int(cpu_max[1]):.0f} vCPU"
+        except Exception:  # noqa: BLE001 - cgroup v1, or not containerised
+            pass
+        limit = ""
+        for f in ("/sys/fs/cgroup/memory.max",
+                  "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+            try:
+                raw = Path(f).read_text().strip()
+                if raw != "max" and int(raw) < (1 << 50):
+                    limit = f"{int(raw) / (1 << 30):.0f} GB"
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if model:
+            out.append(f"host       {cpus} vCPU {model}  {mem} RAM")
+            if quota or limit:
+                out.append(f"pod limits {quota or 'no cpu quota'}"
+                           f"  {limit or 'no memory limit'}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    pod = os.environ.get("RUNPOD_POD_ID") or os.environ.get("HOSTNAME", "")
+    tag = os.environ.get("IMAGE_TAG", "")
+    if pod or tag:
+        out.append(f"pod        {pod or '?'}" + (f"   image {tag}" if tag else ""))
+    return out
+
+
+def fit_steps(results: list[dict]) -> list[str]:
+    """Split the time into what the step count buys and what it does not.
+
+    A sweep over `steps` gives this for free, and the two numbers are worth
+    more than the totals: the fixed part (prompt encode, VAE, decode, write)
+    does not move when you change step count, so a percentage against a total
+    understates what more steps actually cost. Least squares, so three points
+    are better than two - with only two the line passes through them exactly
+    and says nothing about whether the model holds.
+    """
+    import re
+    pts = []
+    for r in results:
+        m = re.search(r"steps=(\d+)", r.get("label", ""))
+        if m and r.get("times"):
+            pts.append((int(m.group(1)), statistics.median(r["times"])))
+    if len({s for s, _ in pts}) < 2:
+        return []
+    n = len(pts)
+    mx = sum(s for s, _ in pts) / n
+    my = sum(t for _, t in pts) / n
+    var = sum((s - mx) ** 2 for s, _ in pts)
+    if var == 0:
+        return []
+    k = sum((s - mx) * (t - my) for s, t in pts) / var
+    fixed = my - k * mx
+    lines = [f"\nsteps model  {fixed:.2f}s fixed + {k:.2f}s per step "
+             f"({n} point(s))"]
+    if fixed > 0:
+        lines.append("             predicted: " + "  ".join(
+            f"{s}->{fixed + k * s:.1f}s" for s in (4, 6, 8, 12)))
+    if n == 2:
+        lines.append("             two points fit any line exactly - add a "
+                     "third before trusting the split")
+    return lines
 
 # Each entry is (label, extra CLI args). "baseline" must stay first: every
 # other configuration is reported as a delta against it.
@@ -152,6 +303,19 @@ def set_input(workflow: dict, name: str, value) -> int:
     return n
 
 
+def label_outputs(workflow: dict, label: str) -> None:
+    """Name the files after the point that produced them.
+
+    Every run otherwise lands under the template's own prefix, so a sweep
+    leaves a pile of `MiniMax_H3_00042.mp4` and the only way to tell which
+    setting made which clip is the modification time. That turns the visual
+    half of a benchmark - the half that actually decides anything - into
+    guesswork.
+    """
+    safe = re.sub(r"[^A-Za-z0-9.=-]+", "_", label).strip("_") or "run"
+    set_input(workflow, "filename_prefix", f"bench/{safe}/{safe}")
+
+
 def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
     """'steps=8,12,20' -> ('steps', [8, 12, 20]), numbers kept numeric."""
     out = []
@@ -233,6 +397,7 @@ def sweep_in_instance(workflow: dict, sweeps: list[tuple[str, list]],
             continue
 
         log(f"\n--- {label} ---")
+        label_outputs(wf, label)
         times = []
         for i in range(reps + 1):
             force_seed(wf, BASE_SEED + i)
@@ -277,6 +442,7 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
         if sweeps:
             return sweep_in_instance(workflow, sweeps, reps)
 
+        label_outputs(workflow, label)
         times: list[float] = []
         # +1: the first run pays model staging and any cold Triton kernels.
         # It is measured and shown, then dropped from the statistics.
@@ -336,6 +502,22 @@ def main() -> int:
         log("        Re-export it from ComfyUI with Export (API).")
         return 1
 
+    # Below 0.6 MP this project judges the output too degraded to act on, so a
+    # timing measured there is a number nobody will use. Warn rather than
+    # refuse: measuring the cheap end on purpose is legitimate, forgetting
+    # where you are is not.
+    sizes = [n["inputs"].get("megapixels") for n in workflow.values()
+             if n.get("class_type") == "ResolutionSelector"]
+    if args.sweep:
+        swept = [v for name, vals in parse_sweep(args.sweep)
+                 if name == "megapixels" for v in vals]
+        sizes = swept or sizes
+    for mp in sizes:
+        if isinstance(mp, (int, float)) and mp < MEGAPIXEL_FLOOR:
+            log(f"[WARN] {mp} MP is below the {MEGAPIXEL_FLOOR} MP floor this "
+                f"project judges usable - the timing will not describe a "
+                f"setting you would ship.")
+
     # Refuse to share the scratch port. wait_ready() only asks whether anything
     # answers there, so a leftover instance - or a second copy of this script -
     # would be mistaken for our own: every prompt would go to a server started
@@ -391,6 +573,10 @@ def main() -> int:
         results = [bench_config(n, CONFIGS[n], workflow, args.reps) for n in names]
 
     log(f"\n{'=' * 62}\nRESULTS  ({args.reps} runs each, warm-up discarded)\n{'=' * 62}")
+    # Before the numbers, not after: the machine is part of the result.
+    for line in hardware():
+        log(line)
+    log("")
     log(f"{'config':<12} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}  vs base")
 
     base = None
@@ -409,8 +595,13 @@ def main() -> int:
         log(f"{r['label']:<12} {med:8.2f}s {lo:8.2f}s {hi:8.2f}s "
             f"{(hi - lo) / med * 100:7.1f}% {delta}")
 
+    for line in fit_steps(results):
+        log(line)
+
     log("\nRead spread before believing a delta: if it exceeds the difference")
     log("between two configs, you measured noise, not an improvement.")
+    log("Absolute times belong to THIS pod - two 5090s here differed by 20%.")
+    log("Compare configs within one run; carry ratios between pods, not seconds.")
     log("--fast features can degrade quality - watch the video, not just the clock.")
     return 0
 

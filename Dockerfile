@@ -169,7 +169,7 @@ RUN git clone --filter=blob:none https://github.com/Comfy-Org/ComfyUI-Manager.gi
     && git -C cg-use-everywhere checkout -q 50ae9f8c5d8b9538589663c90a15d4067a02969c \
     # Sampler for the step-distillation LoRA: 4 steps instead of 12.
     && git clone --filter=blob:none https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo.git \
-    && git -C ComfyUI-MiniMax-H3-Turbo checkout -q 96cc1ddc001617da132dd73f31cd43666bf1d8d4 \
+    && git -C ComfyUI-MiniMax-H3-Turbo checkout -q 55fee864dd7b2976b1c4ce3c3d5f7968f181409f \
     && for dir in /app/comfyui/custom_nodes/*/; do \
         if [ -f "${dir}requirements.txt" ]; then \
             pip install --no-cache-dir -r "${dir}requirements.txt" || \
@@ -290,7 +290,24 @@ COPY scripts/worker.py /app/scripts/worker.py
 # API-format templates the worker injects into, plus a sample job. Kept out of
 # ComfyUI's own workflow directory on purpose: these are the /prompt payload
 # shape, not the editor's, and the UI would list them as broken graphs.
-COPY workflows/ /app/workflows/
+COPY workflows/*.json /app/workflows/
+# The reference graphs. A glob on *.json does not descend, so these were
+# missing from the image while the repository had them - the failure surfaced
+# as FileNotFoundError on a fresh pod, which reads like a bad path rather than
+# a build that never carried the file.
+COPY workflows/bench/ /app/workflows/bench/
+# Input images, into ComfyUI's own input directory. start.sh seeds them onto
+# the volume, which is where --input-directory actually points. The official
+# H3 templates name a file that is published nowhere upstream, so without this
+# they - and any bench built on them - only run on the machine the graph was
+# exported from.
+COPY inputs/*.png /app/comfyui/input/
+# The same two graphs in editor format, staged where ComfyUI looks. start.sh
+# seeds this directory onto the volume, so they appear in the sidebar with no
+# import step. They exist because checking a change by hand was impossible
+# otherwise: an API graph has no positions and no links, so the canvas cannot
+# draw it, and the person testing had to rebuild the wiring from memory.
+COPY workflows/gui/ /app/comfyui/user/default/workflows/
 COPY examples/ /app/examples/
 COPY init.sh start.sh fetch_models.sh /app/
 COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
