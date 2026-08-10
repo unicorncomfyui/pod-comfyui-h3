@@ -1408,7 +1408,7 @@
               "Node name for S&R": "MiniMaxH3TurboLoRA"
             },
             "widgets_values": [
-              "minimax_h3_turbo_4step_ckpt500.safetensors",
+              "minimax_h3_turbo_v4_step600_ema.safetensors",
               1.0,
               false
             ]
