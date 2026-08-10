@@ -5,7 +5,10 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, develop]
+    # `watch/**` carries the watcher's proposals. Building them is the point:
+    # a pull request you cannot pull as an image has to be merged before it
+    # can be judged, which defeats having a test branch at all.
+    branches: [main, develop, 'watch/**']
     paths-ignore: ['**.md', 'docs/**']
   pull_request:
     branches: [main]
@@ -64,6 +67,15 @@ jobs:
         id: gate
         run: |
           SEL="${{ github.event.inputs.targets }}"
+          # A proposal only needs the target you actually test on. Building
+          # the compatibility image too would double a long build for a
+          # branch whose purpose is to be judged and then deleted.
+          if [ "${{ startsWith(github.ref, 'refs/heads/watch/') }}" = "true" ] \
+             && [ "${{ matrix.primary }}" != "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Proposal branch: building the primary target only."
+            exit 0
+          fi
           if [ -z "$SEL" ] || [ "$SEL" = "all" ] || [ "$SEL" = "${{ matrix.target }}" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -127,6 +139,12 @@ jobs:
             type=raw,value=${{ matrix.target }}-{{date 'YYYYMMDD'}}-{{sha}}
             type=raw,value=latest,enable=${{ matrix.primary && github.ref == 'refs/heads/main' }}
             type=semver,pattern=${{ matrix.target }}-{{version}}
+            # One stable name to point a test pod at while judging a
+            # proposal, so you paste a tag instead of a branch-derived
+            # mouthful. It moves with each proposal, which is fine: only one
+            # is ever under review, and the sha tag above stays immutable if
+            # you need to come back to a specific build.
+            type=raw,value=${{ matrix.target }}-proposal,enable=${{ startsWith(github.ref, 'refs/heads/watch/') }}
 
       - name: Build and push
         if: steps.gate.outputs.run == 'true'
