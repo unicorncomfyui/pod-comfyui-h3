@@ -122,8 +122,31 @@ def hardware() -> list[str]:
             if line.startswith("MemTotal"):
                 mem = f"{int(line.split()[1]) / 1048576:.0f} GB"
                 break
+        # /proc shows the HOST inside a container, not what this pod was
+        # given: a 94 GB pod reported 756 GB and 224 vCPU here. The cgroup is
+        # the allocation, and the allocation is what explains a slow run.
+        quota = ""
+        try:
+            cpu_max = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+            if cpu_max[0] != "max":
+                quota = f"{int(cpu_max[0]) / int(cpu_max[1]):.0f} vCPU"
+        except Exception:  # noqa: BLE001 - cgroup v1, or not containerised
+            pass
+        limit = ""
+        for f in ("/sys/fs/cgroup/memory.max",
+                  "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+            try:
+                raw = Path(f).read_text().strip()
+                if raw != "max" and int(raw) < (1 << 50):
+                    limit = f"{int(raw) / (1 << 30):.0f} GB"
+                break
+            except Exception:  # noqa: BLE001
+                continue
         if model:
             out.append(f"host       {cpus} vCPU {model}  {mem} RAM")
+            if quota or limit:
+                out.append(f"pod limits {quota or 'no cpu quota'}"
+                           f"  {limit or 'no memory limit'}")
     except Exception:  # noqa: BLE001
         pass
 
