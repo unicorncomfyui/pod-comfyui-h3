@@ -16,7 +16,7 @@
   },
   "114": {
     "inputs": {
-      "image": "example.png"
+      "image": "transparent_rgb_gaming_mouse.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -160,7 +160,7 @@
   },
   "105:15": {
     "inputs": {
-      "noise_seed": 168866841893410
+      "noise_seed": 1234
     },
     "class_type": "RandomNoise",
     "_meta": {

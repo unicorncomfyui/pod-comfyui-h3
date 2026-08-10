@@ -291,6 +291,12 @@ COPY scripts/worker.py /app/scripts/worker.py
 # ComfyUI's own workflow directory on purpose: these are the /prompt payload
 # shape, not the editor's, and the UI would list them as broken graphs.
 COPY workflows/*.json /app/workflows/
+# Input images, into ComfyUI's own input directory. start.sh seeds them onto
+# the volume, which is where --input-directory actually points. The official
+# H3 templates name a file that is published nowhere upstream, so without this
+# they - and any bench built on them - only run on the machine the graph was
+# exported from.
+COPY inputs/*.png /app/comfyui/input/
 # The same two graphs in editor format, staged where ComfyUI looks. start.sh
 # seeds this directory onto the volume, so they appear in the sidebar with no
 # import step. They exist because checking a change by hand was impossible
