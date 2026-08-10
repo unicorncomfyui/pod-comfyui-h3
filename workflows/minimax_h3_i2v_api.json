@@ -26,7 +26,7 @@
   "115": {
     "inputs": {
       "aspect_ratio": "2:3 (Portrait Photo)",
-      "megapixels": 0.4,
+      "megapixels": 0.6,
       "multiple": 32
     },
     "class_type": "ResolutionSelector",

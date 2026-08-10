@@ -291,6 +291,11 @@ COPY scripts/worker.py /app/scripts/worker.py
 # ComfyUI's own workflow directory on purpose: these are the /prompt payload
 # shape, not the editor's, and the UI would list them as broken graphs.
 COPY workflows/*.json /app/workflows/
+# The reference graphs. A glob on *.json does not descend, so these were
+# missing from the image while the repository had them - the failure surfaced
+# as FileNotFoundError on a fresh pod, which reads like a bad path rather than
+# a build that never carried the file.
+COPY workflows/bench/ /app/workflows/bench/
 # Input images, into ComfyUI's own input directory. start.sh seeds them onto
 # the volume, which is where --input-directory actually points. The official
 # H3 templates name a file that is published nowhere upstream, so without this

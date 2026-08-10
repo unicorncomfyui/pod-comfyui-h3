@@ -49,6 +49,12 @@ KEEP_CUSTOM_NODES = False
 # Base seed; repetition i runs with BASE_SEED + i. See force_seed().
 BASE_SEED = 1234
 
+# Measured on this project, by eye rather than by metric: below this the output
+# loses too much to be worth shipping, so a timing taken there describes a
+# setting nobody would use. It is a floor for BENCHMARKS, not a limit on what
+# the pipeline accepts.
+MEGAPIXEL_FLOOR = float(os.environ.get("BENCH_MEGAPIXEL_FLOOR", "0.6"))
+
 
 def _sh(cmd: list[str]) -> str:
     try:
@@ -479,6 +485,22 @@ def main() -> int:
         log("[ERROR] This is not an API-format workflow.")
         log("        Re-export it from ComfyUI with Export (API).")
         return 1
+
+    # Below 0.6 MP this project judges the output too degraded to act on, so a
+    # timing measured there is a number nobody will use. Warn rather than
+    # refuse: measuring the cheap end on purpose is legitimate, forgetting
+    # where you are is not.
+    sizes = [n["inputs"].get("megapixels") for n in workflow.values()
+             if n.get("class_type") == "ResolutionSelector"]
+    if args.sweep:
+        swept = [v for name, vals in parse_sweep(args.sweep)
+                 if name == "megapixels" for v in vals]
+        sizes = swept or sizes
+    for mp in sizes:
+        if isinstance(mp, (int, float)) and mp < MEGAPIXEL_FLOOR:
+            log(f"[WARN] {mp} MP is below the {MEGAPIXEL_FLOOR} MP floor this "
+                f"project judges usable - the timing will not describe a "
+                f"setting you would ship.")
 
     # Refuse to share the scratch port. wait_ready() only asks whether anything
     # answers there, so a leftover instance - or a second copy of this script -
