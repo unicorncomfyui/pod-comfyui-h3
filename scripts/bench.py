@@ -337,8 +337,80 @@ def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
     return out
 
 
+class VramWatch:
+    """Peak VRAM across a run, sampled by nvidia-smi at 200 ms.
+
+    The first version polled /system_stats inside the one-second loop that
+    watches the queue. It was free, and it was too coarse: repeated runs of
+    the SAME configuration reported peaks 1-2 GB apart, while the effect being
+    measured - the upstream H3 VAE rework - is worth about 3.5 GB. An
+    instrument whose noise is half the signal cannot settle the question.
+
+    nvidia-smi in its own process at 200 ms costs nothing on the GPU, does not
+    contend for the GIL, and does not add HTTP load to the server being timed.
+    Total used on the device, not torch's accounting: the offloader and the
+    VAE both count against the same 32 GB.
+
+    Still a high-water mark of what was SEEN. A spike shorter than 200 ms can
+    hide - but VAE decode, the phase this measures, lasts seconds.
+    """
+
+    def __init__(self) -> None:
+        self.proc = None
+
+    def __enter__(self):
+        try:
+            self.proc = subprocess.Popen(
+                ["nvidia-smi", "--query-gpu=memory.used",
+                 "--format=csv,noheader,nounits", "-lms", "200"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        except Exception:  # noqa: BLE001 - instrumentation never fails a run
+            self.proc = None
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    def peak_mb(self) -> float | None:
+        if not self.proc:
+            return None
+        try:
+            self.proc.terminate()
+            out, _ = self.proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                self.proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        vals = [float(x) for x in (out or "").split() if x.strip().isdigit()]
+        return max(vals) if vals else None
+
+
+# Peak seen during the last run_prompt(), in MB. A module global because
+# run_prompt returns one number and its callers already build rows from it.
+PEAK_VRAM_MB: float | None = None
+
+
 def run_prompt(workflow: dict) -> float | None:
-    """Queue one prompt and return ComfyUI's own execution time in seconds."""
+    """Queue one prompt and return ComfyUI's own execution time in seconds.
+
+    Also records the peak VRAM seen while it ran. The polling loop below
+    already wakes every second, so sampling there is free - but a spike
+    shorter than a second can be missed. VAE decode, the phase this project
+    cares about, lasts several seconds, so it is seen; treat the number as a
+    high-water mark of what was observed, not a proven maximum.
+    """
+    global PEAK_VRAM_MB
+    PEAK_VRAM_MB = None
+    watch = VramWatch().__enter__()
+    try:
+        return _run_prompt(workflow)
+    finally:
+        PEAK_VRAM_MB = watch.peak_mb()
+
+
+def _run_prompt(workflow: dict) -> float | None:
     prompt_id = api("/prompt", {"prompt": workflow})["prompt_id"]
 
     while True:
@@ -352,7 +424,22 @@ def run_prompt(workflow: dict) -> float | None:
         if not status.get("completed") and status.get("status_str") != "error":
             continue
         if status.get("status_str") == "error":
-            log("[ERROR] Prompt failed - check the ComfyUI log")
+            # The history entry already carries the exception, the node class
+            # that raised it and a traceback. Printing "check the ComfyUI log"
+            # instead sent the reader to a spawned instance whose output is
+            # not even on screen - the answer was in hand and thrown away.
+            log("[ERROR] Prompt failed:")
+            for m in status.get("messages", []):
+                if not (isinstance(m, list) and len(m) == 2):
+                    continue
+                if m[0] != "execution_error":
+                    continue
+                d = m[1] if isinstance(m[1], dict) else {}
+                log(f"        node  {d.get('node_type', '?')} "
+                    f"(#{d.get('node_id', '?')})")
+                log(f"        error {str(d.get('exception_message', ''))[:300]}")
+                for line in (d.get("traceback") or [])[-4:]:
+                    log(f"        | {str(line).rstrip()[:160]}")
             return None
 
         # messages: [["execution_start", {"timestamp": ms}], ...]
@@ -398,17 +485,20 @@ def sweep_in_instance(workflow: dict, sweeps: list[tuple[str, list]],
 
         log(f"\n--- {label} ---")
         label_outputs(wf, label)
-        times = []
+        times, peaks = [], []
         for i in range(reps + 1):
             force_seed(wf, BASE_SEED + i)
             t = run_prompt(wf)
             if t is None:
                 break
             log(f"  {'warmup' if i == 0 else f'run {i}':>8}: {t:7.2f} s"
+                + (f"  peak {PEAK_VRAM_MB / 1024:.1f} GB" if PEAK_VRAM_MB else "")
                 + ("   (discarded)" if i == 0 else ""))
             if i > 0:
                 times.append(t)
-        rows.append({"label": label, "times": times})
+                if PEAK_VRAM_MB:
+                    peaks.append(PEAK_VRAM_MB)
+        rows.append({"label": label, "times": times, "peaks": peaks})
     return rows
 
 
@@ -444,6 +534,7 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
 
         label_outputs(workflow, label)
         times: list[float] = []
+        peaks: list[float] = []
         # +1: the first run pays model staging and any cold Triton kernels.
         # It is measured and shown, then dropped from the statistics.
         for i in range(reps + 1):
@@ -452,10 +543,14 @@ def bench_config(label: str, extra: list[str], workflow: dict, reps: int,
             if t is None:
                 break
             tag = "warmup" if i == 0 else f"run {i}"
-            log(f"  {tag:>8}: {t:7.2f} s" + ("   (discarded)" if i == 0 else ""))
+            log(f"  {tag:>8}: {t:7.2f} s"
+                + (f"  peak {PEAK_VRAM_MB / 1024:.1f} GB" if PEAK_VRAM_MB else "")
+                + ("   (discarded)" if i == 0 else ""))
             if i > 0:
                 times.append(t)
-        return {"label": label, "times": times}
+                if PEAK_VRAM_MB:
+                    peaks.append(PEAK_VRAM_MB)
+        return {"label": label, "times": times, "peaks": peaks}
     finally:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         try:
@@ -577,7 +672,8 @@ def main() -> int:
     for line in hardware():
         log(line)
     log("")
-    log(f"{'config':<12} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}  vs base")
+    log(f"{'config':<12} {'median':>9} {'min':>9} {'max':>9} {'spread':>8}"
+        f"  {'peak VRAM':>10}  vs base")
 
     base = None
     for r in results:
@@ -591,15 +687,22 @@ def main() -> int:
         else:
             pct = (med - base) / base * 100
             delta = f"{pct:+6.1f}%"
+        # Peak VRAM is the point of some changes and invisible to the clock:
+        # the H3 VAE rework upstream moved 14.6 s to 13.9 s while freeing 3.5 GB.
+        peaks = r.get("peaks") or []
+        vram = f"{max(peaks) / 1024:8.1f} GB" if peaks else f"{'-':>11}"
         # Spread wider than the effect means the result is noise.
         log(f"{r['label']:<12} {med:8.2f}s {lo:8.2f}s {hi:8.2f}s "
-            f"{(hi - lo) / med * 100:7.1f}% {delta}")
+            f"{(hi - lo) / med * 100:7.1f}% {vram} {delta}")
 
     for line in fit_steps(results):
         log(line)
 
     log("\nRead spread before believing a delta: if it exceeds the difference")
     log("between two configs, you measured noise, not an improvement.")
+    log("Peak VRAM is sampled at 200 ms - a high-water mark of what was seen,")
+    log("not a proven maximum. It IS comparable between pods: the same card and")
+    log("the same weights use the same memory, whatever the host does.")
     log("Absolute times belong to THIS pod - two 5090s here differed by 20%.")
     log("Compare configs within one run; carry ratios between pods, not seconds.")
     log("--fast features can degrade quality - watch the video, not just the clock.")
