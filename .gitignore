@@ -50,6 +50,12 @@ temp/
 *.mp4
 *.webm
 
+# ...but inputs/ is source, not output. The rule above exists to keep generated
+# frames and clips out of the repository, and it silently swallowed the one
+# image the workflows depend on - `git add` reported success and the commit
+# simply did not contain it.
+!inputs/*.png
+
 # Logs
 *.log
 logs/
