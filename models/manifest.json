@@ -145,6 +145,36 @@
           "size_gb": 0.61
         }
       ]
+    },
+    "minimax-h3-vae-int8": {
+      "description": "Video VAE quantised to int8_convrot, 2.95 GB instead of 5.21. Upstream reports decode about 1.5x faster, and it frees 2.26 GB on a card this stack already fills. Needs ComfyUI 0.31.0 or newer - older cores decode to black frames, which is at least an unmistakable failure. Off by default: the VAE decodes once at the very end, so unlike the diffusion model there is no later step to correct a quantisation error. Compare with workflows/bench/vae_ab_api.json before adopting it.",
+      "default": false,
+      "files": [
+        {
+          "repo": "Kijai/MiniMax-H3-experimental",
+          "path": "minimax_h3_video_vae_int8_convrot.safetensors",
+          "dest": "vae",
+          "size_gb": 2.95
+        }
+      ]
+    },
+    "minimax-h3-w4a8": {
+      "description": "fl2va and ref2va in the experimental w4a8 format - 4-bit weights, int8-convrot activations. 11.68 and 10.96 GB against 20.97 each. With the int8 VAE the whole set falls to about 31 GB, which is the first time it would fit a 32 GB card without permanent offload. Needs comfy-kitchen 0.2.27+, which ComfyUI pins from 0.31.0 onward. Its author calls it experimental and at testing phase, so judge the output before trusting the size.",
+      "default": false,
+      "files": [
+        {
+          "repo": "Kijai/MiniMax-H3-experimental",
+          "path": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
+          "dest": "diffusion_models",
+          "size_gb": 11.68
+        },
+        {
+          "repo": "Kijai/MiniMax-H3-experimental",
+          "path": "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+          "dest": "diffusion_models",
+          "size_gb": 10.96
+        }
+      ]
     }
   }
 }
