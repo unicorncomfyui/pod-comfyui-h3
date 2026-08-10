@@ -84,6 +84,21 @@ for wf in "$COMFYUI_HOME"/user/default/workflows/*.json; do
     fi
 done
 
+# And the input directory, for the same reason: --input-directory points at the
+# volume, so ComfyUI's own bundled example.png is never visible and a fresh pod
+# starts with nothing to load. A workflow that names an image no pod has is a
+# workflow nobody else can run - which is exactly how the bench died twice,
+# once on a file that only existed on the machine the graph was exported from.
+mkdir -p "$DATA_DIR/input"
+for img in "$COMFYUI_HOME"/input/*; do
+    [ -f "$img" ] || continue
+    target="$DATA_DIR/input/$(basename "$img")"
+    if [ ! -f "$target" ]; then
+        cp "$img" "$target" 2>/dev/null || true
+        echo "[OK] Input seeded: $(basename "$img")"
+    fi
+done
+
 # ---------------------------------------------------------------------------
 # Point ComfyUI at the volume. Regenerated on every boot so a changed
 # COMFYUI_DATA_DIR takes effect without hand-editing a file on the volume.

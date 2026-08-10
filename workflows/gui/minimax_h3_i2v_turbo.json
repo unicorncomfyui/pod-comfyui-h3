@@ -72,7 +72,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "transparent_rgb_gaming_mouse.png",
+        "example.png",
         "image"
       ]
     },
