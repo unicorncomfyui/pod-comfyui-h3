@@ -276,12 +276,21 @@ RUN mkdir -p /app/comfyui/models/upscale_models \
              /app/comfyui/user/default/workflows \
              /root/.config/code-server \
              /root/.local/share/code-server/User \
-    && wget -q -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
+    # Hugging Face rate-limits, and two targets build in parallel from one
+    # runner IP. A 429 is an HTTP error, so wget's default retry - which only
+    # covers network failures - lets it through and kills the whole image. The
+    # cu129 build died this way while cu130 passed on the same URLs, minutes
+    # apart. Retry on the status codes that mean "later, not never".
+    && wget -q --tries=5 --waitretry=15 --retry-connrefused \
+        --retry-on-http-error=408,429,500,502,503,504 \
+        -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
         "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth" \
     # Ready-made turbo workflow, staged onto the volume by start.sh - ComfyUI
     # reads workflows from --user-directory, which points at the volume, so a
     # copy left in the image would never be listed in the UI.
-    && wget -q -O /app/comfyui/user/default/workflows/minimax_h3_t2v_turbo.json \
+    && wget -q --tries=5 --waitretry=15 --retry-connrefused \
+        --retry-on-http-error=408,429,500,502,503,504 \
+        -O /app/comfyui/user/default/workflows/minimax_h3_t2v_turbo.json \
         "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/resolve/main/minimax_h3_t2v_turbo.json"
 
 # ---------------------------------------------------------------------------
