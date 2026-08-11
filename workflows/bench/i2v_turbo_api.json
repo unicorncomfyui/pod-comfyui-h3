@@ -231,7 +231,7 @@
   },
   "105:111": {
     "inputs": {
-      "value": 5
+      "value": 3.0
     },
     "class_type": "PrimitiveFloat",
     "_meta": {
