@@ -292,16 +292,26 @@ def force_seed(workflow: dict, seed: int) -> int:
 
 
 def set_input(workflow: dict, name: str, value) -> int:
-    """Set every widget called `name` across the workflow.
+    """Set a widget across the workflow, optionally on one node only.
+
+    `name` may be `field` or `target.field`, where target is a node id or a
+    class_type. Some fields legitimately appear on several nodes that must NOT
+    move together: this graph loads two VAEs through the same `VAELoader`
+    class, and sweeping `vae_name` would hand the video VAE's replacement to
+    the audio one, which has no such file and fails the run. Naming the node
+    is the only way to say which of the two you meant.
 
     Values that are lists are node links, not widgets - never overwrite those.
     """
+    target, _, field = name.rpartition(".")
     n = 0
-    for node in workflow.values():
+    for node_id, node in workflow.items():
+        if target and target not in (node_id, node.get("class_type")):
+            continue
         inputs = node.get("inputs", {})
-        if name in inputs and not isinstance(inputs[name], list):
-            current = inputs[name]
-            inputs[name] = type(current)(value) if current is not None else value
+        if field in inputs and not isinstance(inputs[field], list):
+            current = inputs[field]
+            inputs[field] = type(current)(value) if current is not None else value
             n += 1
     return n
 
@@ -588,7 +598,9 @@ def main() -> int:
                    help="config name, repeatable; default is all of them")
     p.add_argument("--sweep", action="append",
                    help="NAME=v1,v2,... sweep a workflow widget; repeatable. "
-                        "e.g. --sweep steps=8,12,20 --sweep megapixels=0.3,0.6,1.0")
+                        "e.g. --sweep steps=8,12,20 --sweep megapixels=0.3,0.6,1.0. "
+                        "Prefix with a node id or class to target one node: "
+                        "--sweep 105:11.vae_name=a.safetensors,b.safetensors")
     p.add_argument("--keep-custom-nodes", action="store_true",
                    help="leave custom nodes enabled. Needed when the workflow "
                         "routes a widget through a utility node, which would "
