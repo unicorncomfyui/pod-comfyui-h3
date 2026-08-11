@@ -166,7 +166,7 @@ RUN git clone --filter=blob:none https://github.com/Comfy-Org/ComfyUI-Manager.gi
     && git clone --filter=blob:none https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
     && git -C ComfyUI-VideoHelperSuite checkout -q 4ee72c065db22c9d96c2427954dc69e7b908444b \
     && git clone --filter=blob:none https://github.com/kijai/ComfyUI-KJNodes.git \
-    && git -C ComfyUI-KJNodes checkout -q 35e5956193769d18a13136cdedb73a36a05c73e6 \
+    && git -C ComfyUI-KJNodes checkout -q 073efb07419f56cc714e099a82e49fbc23ad9263 \
     && git clone --filter=blob:none https://github.com/rgthree/rgthree-comfy.git \
     && git -C rgthree-comfy checkout -q 6b76ee6f2c5a007710b5a16f97c94330d6ecc871 \
     && git clone --filter=blob:none https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git \

@@ -1,7 +1,7 @@
 {
   "92": {
     "inputs": {
-      "filename_prefix": "video/MiniMax_H3",
+      "filename_prefix": "vae_ab/fp16",
       "format": "auto",
       "codec": "auto",
       "video": [
@@ -36,7 +36,7 @@
   },
   "105:11": {
     "inputs": {
-      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
@@ -185,7 +185,7 @@
   },
   "105:104": {
     "inputs": {
-      "prompt": "A placeholder prompt. The worker overwrites this widget.",
+      "prompt": "[Shot 1] Live-action, cinematic product shot. A transparent gaming mouse rests on a dark reflective desk, lit by a deep blue rim light from the left and a warm amber accent from inside the shell, its circuit board and scroll wheel visible through the clear plastic. The camera trucks right with small amplitude at slow speed while a narrow highlight travels across the curved surface and the reflection shifts on the desk. No people, no dialogue, no on-screen text. Ambient sound: a steady low room tone with a faint electrical hum, continuous and unchanging, and nothing else.",
       "width": [
         "115",
         0
@@ -231,7 +231,7 @@
   },
   "105:111": {
     "inputs": {
-      "value": 5
+      "value": 3.0
     },
     "class_type": "PrimitiveFloat",
     "_meta": {
@@ -266,6 +266,52 @@
     "class_type": "MiniMaxH3TurboLoRA",
     "_meta": {
       "title": "MiniMax-H3 Turbo LoRA"
+    }
+  },
+  "900": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    }
+  },
+  "901": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "105:14",
+        0
+      ],
+      "vae": [
+        "900",
+        0
+      ]
+    }
+  },
+  "902": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "fps": 24,
+      "bit_depth": 8,
+      "images": [
+        "901",
+        0
+      ],
+      "audio": [
+        "105:23",
+        0
+      ]
+    }
+  },
+  "903": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "filename_prefix": "vae_ab/int8_convrot",
+      "format": "auto",
+      "codec": "auto",
+      "video": [
+        "902",
+        0
+      ]
     }
   }
 }

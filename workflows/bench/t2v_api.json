@@ -27,7 +27,7 @@
   },
   "105:11": {
     "inputs": {
-      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
@@ -220,7 +220,7 @@
   },
   "105:111": {
     "inputs": {
-      "value": 5
+      "value": 3.0
     },
     "class_type": "PrimitiveFloat",
     "_meta": {

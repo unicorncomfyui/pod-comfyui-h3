@@ -124,10 +124,13 @@ def hardware() -> list[str]:
                 cpus += 1
             elif line.startswith("model name") and not model:
                 model = line.split(":", 1)[1].strip()
+        # Decimal GB, not GiB. RunPod sells a "92 GB" pod and the cgroup holds
+        # 86 GiB - the same number, and a stamp that disagrees with the invoice
+        # is a stamp you stop trusting.
         mem = ""
         for line in Path("/proc/meminfo").read_text().splitlines():
             if line.startswith("MemTotal"):
-                mem = f"{int(line.split()[1]) / 1048576:.0f} GB"
+                mem = f"{int(line.split()[1]) * 1024 / 1e9:.0f} GB"
                 break
         # /proc shows the HOST inside a container, not what this pod was
         # given: a 94 GB pod reported 756 GB and 224 vCPU here. The cgroup is
@@ -145,7 +148,7 @@ def hardware() -> list[str]:
             try:
                 raw = Path(f).read_text().strip()
                 if raw != "max" and int(raw) < (1 << 50):
-                    limit = f"{int(raw) / (1 << 30):.0f} GB"
+                    limit = f"{int(raw) / 1e9:.0f} GB"
                 break
             except Exception:  # noqa: BLE001
                 continue
@@ -289,16 +292,26 @@ def force_seed(workflow: dict, seed: int) -> int:
 
 
 def set_input(workflow: dict, name: str, value) -> int:
-    """Set every widget called `name` across the workflow.
+    """Set a widget across the workflow, optionally on one node only.
+
+    `name` may be `field` or `target.field`, where target is a node id or a
+    class_type. Some fields legitimately appear on several nodes that must NOT
+    move together: this graph loads two VAEs through the same `VAELoader`
+    class, and sweeping `vae_name` would hand the video VAE's replacement to
+    the audio one, which has no such file and fails the run. Naming the node
+    is the only way to say which of the two you meant.
 
     Values that are lists are node links, not widgets - never overwrite those.
     """
+    target, _, field = name.rpartition(".")
     n = 0
-    for node in workflow.values():
+    for node_id, node in workflow.items():
+        if target and target not in (node_id, node.get("class_type")):
+            continue
         inputs = node.get("inputs", {})
-        if name in inputs and not isinstance(inputs[name], list):
-            current = inputs[name]
-            inputs[name] = type(current)(value) if current is not None else value
+        if field in inputs and not isinstance(inputs[field], list):
+            current = inputs[field]
+            inputs[field] = type(current)(value) if current is not None else value
             n += 1
     return n
 
@@ -311,9 +324,22 @@ def label_outputs(workflow: dict, label: str) -> None:
     setting made which clip is the modification time. That turns the visual
     half of a benchmark - the half that actually decides anything - into
     guesswork.
+
+    The graph's own prefix is KEPT as a suffix, not replaced. A workflow with
+    two save nodes distinguishes them there - the VAE comparison writes `fp16`
+    and `int8_convrot` - and overwriting both with the config name destroyed
+    exactly the distinction the run existed to make. Eight files, four per
+    config, none of them attributable.
     """
     safe = re.sub(r"[^A-Za-z0-9.=-]+", "_", label).strip("_") or "run"
-    set_input(workflow, "filename_prefix", f"bench/{safe}/{safe}")
+    for node in workflow.values():
+        inputs = node.get("inputs", {})
+        current = inputs.get("filename_prefix")
+        if not isinstance(current, str):
+            continue
+        leaf = re.sub(r"[^A-Za-z0-9.=-]+", "_", current.split("/")[-1]).strip("_")
+        inputs["filename_prefix"] = f"bench/{safe}/{safe}_{leaf}" if leaf \
+            else f"bench/{safe}/{safe}"
 
 
 def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
@@ -572,7 +598,9 @@ def main() -> int:
                    help="config name, repeatable; default is all of them")
     p.add_argument("--sweep", action="append",
                    help="NAME=v1,v2,... sweep a workflow widget; repeatable. "
-                        "e.g. --sweep steps=8,12,20 --sweep megapixels=0.3,0.6,1.0")
+                        "e.g. --sweep steps=8,12,20 --sweep megapixels=0.3,0.6,1.0. "
+                        "Prefix with a node id or class to target one node: "
+                        "--sweep 105:11.vae_name=a.safetensors,b.safetensors")
     p.add_argument("--keep-custom-nodes", action="store_true",
                    help="leave custom nodes enabled. Needed when the workflow "
                         "routes a widget through a utility node, which would "
