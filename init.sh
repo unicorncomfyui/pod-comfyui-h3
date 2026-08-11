@@ -132,6 +132,23 @@ echo "--- PyTorch / CUDA ---"
 # runtime injection on a community host, a driver updated under a running
 # container. All of them end here, and torch is the only thing that can tell.
 CUDA_OK=true
+
+# /dev/nvidia-uvm is created by the container runtime, not by this image, and on
+# a busy host it can appear a few seconds after the entrypoint does. nvidia-smi
+# never touches it - it talks to the kernel module directly - but cuInit cannot
+# work without it, which is how a pod ends up with a perfectly healthy GPU and
+# "CUDA unknown error". Wait a little rather than kill a pod for losing a
+# startup race. If the node is genuinely never coming, thirty seconds is a cheap
+# price for being sure, and the evidence below says so explicitly.
+if [ -e /dev/nvidiactl ] && [ ! -e /dev/nvidia-uvm ]; then
+    echo "[WARN] /dev/nvidia-uvm not present yet - waiting up to 30 s"
+    for _ in 1 2 3 4 5 6; do
+        sleep 5
+        [ -e /dev/nvidia-uvm ] && break
+    done
+    [ -e /dev/nvidia-uvm ] && echo "[OK] /dev/nvidia-uvm appeared"
+fi
+
 python - <<'PY' || CUDA_OK=false
 import sys
 print(f"Python: {sys.version.split()[0]}")
@@ -182,13 +199,55 @@ if [ "$CUDA_OK" != "true" ]; then
     echo "[FATAL] PyTorch cannot use a GPU on this host."
     echo ""
     echo "  nvidia-smi may still look perfectly healthy - it does not go"
-    echo "  through the CUDA runtime. Check, in this order:"
+    echo "  through the CUDA runtime."
     echo ""
-    echo "    env | grep -i cuda      an EMPTY CUDA_VISIBLE_DEVICES hides"
-    echo "                            every device; unset it, do not set it to 0"
-    echo "    ls /dev/nvidia*         nvidia-uvm missing breaks CUDA alone"
-    echo "    redeploy elsewhere      a host driver updated under a running"
-    echo "                            container leaves libs and module mismatched"
+    # Telling the reader to run `ls /dev/nvidia*` is useless advice: by the time
+    # anyone reads this the container has exited and taken the evidence with it.
+    # Collect it here, while the failing host is still under our feet, so a
+    # recurring failure can be attributed instead of guessed at.
+    echo "  --- evidence, collected on the failing host ---"
+    echo ""
+    if ls /dev/nvidia* >/dev/null 2>&1; then
+        ls -l /dev/nvidia* 2>&1 | sed 's/^/    /'
+    else
+        echo "    no /dev/nvidia* device nodes at all"
+    fi
+    echo ""
+
+    # The kernel module's version. The user-space libcuda carries its own in the
+    # filename. They are installed by different halves of the container runtime,
+    # and a host driver upgraded under a running container is exactly the case
+    # where they stop agreeing - libs and module mismatched, GPU still visible.
+    KMOD_VER=$(sed -n 's/.*Kernel Module *\([0-9.]*\).*/\1/p' /proc/driver/nvidia/version 2>/dev/null | head -1)
+    LIBCUDA=$(ls /usr/lib/x86_64-linux-gnu/libcuda.so.[0-9]* /usr/local/nvidia/lib64/libcuda.so.[0-9]* 2>/dev/null | head -1)
+    LIB_VER=${LIBCUDA##*libcuda.so.}
+    echo "    kernel module : ${KMOD_VER:-unknown}"
+    echo "    libcuda       : ${LIB_VER:-not found}  (${LIBCUDA:-no libcuda.so.* on the path})"
+    echo ""
+
+    echo "  --- reading ---"
+    echo ""
+    if [ ! -e /dev/nvidiactl ]; then
+        echo "    No device nodes. The container was started without GPU access."
+        echo "    This is a template or scheduling problem, not a driver one."
+    elif [ ! -e /dev/nvidia-uvm ]; then
+        echo "    nvidia-uvm is MISSING and it did not appear after 30 s."
+        echo "    CUDA cannot initialise without it; nvidia-smi does not need it,"
+        echo "    which is why the GPU looks fine. Nothing in this image can"
+        echo "    create that node - it comes from the host's container runtime."
+        echo "    REDEPLOY ON ANOTHER HOST. Retrying here will not help."
+    elif [ -n "$KMOD_VER" ] && [ -n "$LIB_VER" ] && [ "$KMOD_VER" != "$LIB_VER" ]; then
+        echo "    Kernel module ${KMOD_VER} against libcuda ${LIB_VER}: the host"
+        echo "    driver was updated under this running container. Restarting the"
+        echo "    pod re-injects matching libraries and usually fixes it."
+    else
+        echo "    Device nodes and driver versions both look consistent, so the"
+        echo "    cause is none of the usual three. Keep this block: it is the"
+        echo "    part worth reporting."
+    fi
+    echo ""
+    echo "  An EMPTY CUDA_VISIBLE_DEVICES also hides every device while leaving"
+    echo "  nvidia-smi happy. Unset it - do not set it to 0."
     echo ""
     echo "  Refusing to boot: the pod would pull 42 GB of weights and start"
     echo "  ComfyUI, then fail on the first generation."
