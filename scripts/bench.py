@@ -124,10 +124,13 @@ def hardware() -> list[str]:
                 cpus += 1
             elif line.startswith("model name") and not model:
                 model = line.split(":", 1)[1].strip()
+        # Decimal GB, not GiB. RunPod sells a "92 GB" pod and the cgroup holds
+        # 86 GiB - the same number, and a stamp that disagrees with the invoice
+        # is a stamp you stop trusting.
         mem = ""
         for line in Path("/proc/meminfo").read_text().splitlines():
             if line.startswith("MemTotal"):
-                mem = f"{int(line.split()[1]) / 1048576:.0f} GB"
+                mem = f"{int(line.split()[1]) * 1024 / 1e9:.0f} GB"
                 break
         # /proc shows the HOST inside a container, not what this pod was
         # given: a 94 GB pod reported 756 GB and 224 vCPU here. The cgroup is
@@ -145,7 +148,7 @@ def hardware() -> list[str]:
             try:
                 raw = Path(f).read_text().strip()
                 if raw != "max" and int(raw) < (1 << 50):
-                    limit = f"{int(raw) / (1 << 30):.0f} GB"
+                    limit = f"{int(raw) / 1e9:.0f} GB"
                 break
             except Exception:  # noqa: BLE001
                 continue
@@ -311,9 +314,22 @@ def label_outputs(workflow: dict, label: str) -> None:
     setting made which clip is the modification time. That turns the visual
     half of a benchmark - the half that actually decides anything - into
     guesswork.
+
+    The graph's own prefix is KEPT as a suffix, not replaced. A workflow with
+    two save nodes distinguishes them there - the VAE comparison writes `fp16`
+    and `int8_convrot` - and overwriting both with the config name destroyed
+    exactly the distinction the run existed to make. Eight files, four per
+    config, none of them attributable.
     """
     safe = re.sub(r"[^A-Za-z0-9.=-]+", "_", label).strip("_") or "run"
-    set_input(workflow, "filename_prefix", f"bench/{safe}/{safe}")
+    for node in workflow.values():
+        inputs = node.get("inputs", {})
+        current = inputs.get("filename_prefix")
+        if not isinstance(current, str):
+            continue
+        leaf = re.sub(r"[^A-Za-z0-9.=-]+", "_", current.split("/")[-1]).strip("_")
+        inputs["filename_prefix"] = f"bench/{safe}/{safe}_{leaf}" if leaf \
+            else f"bench/{safe}/{safe}"
 
 
 def parse_sweep(specs: list[str]) -> list[tuple[str, list]]:
