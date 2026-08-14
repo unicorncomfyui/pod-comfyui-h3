@@ -165,6 +165,7 @@ Les principales :
 | `DOWNLOAD_MODELS` | `true` | `false` pour démarrer sans récupérer les poids |
 | `FAST_DISK` | `false` | Échange RAM hôte contre disque à l'offload — utile seulement sur un pod pauvre en RAM |
 | `PREWARM_SET` | — | Précharge un set dans le page cache au démarrage. Recommandé sur network volume |
+| `COMFY_LOCALE` | `en` | Langue de l'interface sur un volume neuf. N'écrase jamais une langue déjà choisie |
 | `VRAM_HEADROOM` | — | GB gardés libres ; à augmenter en cas d'OOM en cours de sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Ajouté tel quel à la ligne de commande ComfyUI |
 | `CACHE_LRU` | — | `--cache-lru N` : évite de ré-encoder un prompt inchangé |

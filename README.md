@@ -186,6 +186,7 @@ The ones that matter:
 | `DOWNLOAD_MODELS` | `true` | Set `false` to boot without fetching weights |
 | `FAST_DISK` | `false` | Trade host RAM for disk when offloading — only worth it on a RAM-starved pod |
 | `PREWARM_SET` | — | Read one set into the page cache at boot. Recommended on a network volume |
+| `COMFY_LOCALE` | `en` | Interface language for a fresh volume. Never overrides a language already chosen |
 | `CACHE_LRU` | — | Keep N node results; skips re-encoding an unchanged prompt |
 | `FAST_MODE` | — | ComfyUI `--fast` features, or `all` |
 | `ASYNC_OFFLOAD_STREAMS` | 2 | Weight-offload streams |
