@@ -182,7 +182,7 @@ The ones that matter:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8` | Which sets from `models/manifest.json` to download |
+| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8,minimax-h3-ref2v-turbo-lora` | Which sets from `models/manifest.json` to download |
 | `DOWNLOAD_MODELS` | `true` | Set `false` to boot without fetching weights |
 | `FAST_DISK` | `false` | Trade host RAM for disk when offloading — only worth it on a RAM-starved pod |
 | `PREWARM_SET` | — | Read one set into the page cache at boot. Recommended on a network volume |

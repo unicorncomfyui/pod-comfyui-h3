@@ -63,7 +63,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VSCODE_PORT=8080 \
     HF_HOME=/workspace/.cache/huggingface \
     DOWNLOAD_MODELS=true \
-    MODEL_SETS="minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8"
+    MODEL_SETS="minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8,minimax-h3-ref2v-turbo-lora"
 
 # Record the build parameters so a running pod can report exactly what it is.
 ENV BUILD_TORCH_INDEX=${TORCH_INDEX} \

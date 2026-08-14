@@ -87,8 +87,8 @@
       ]
     },
     "minimax-h3-ref2v-turbo-lora": {
-      "description": "Step-distillation LoRA for ref2va, the only one that exists for that task - the larryvrh set covers fl2va alone. Both files are the same LoRA from lightx2v: the 1.96 GB original and Kijai's rank-20 repack at 0.31 GB, six times smaller. Ship both and judge whether the compression costs anything, then drop one. Upstream specs it at 4 steps exactly (distilled on 4 NFE), video shift 12 and audio shift 3, trained at 544p with mixed aspect ratios - so it goes off-distribution above 6 steps and above roughly 640 on the short edge, while the base ref2va model's native canvas is 768. Off by default until measured.",
-      "default": false,
+      "description": "Step-distillation LoRA for ref2va, the only one that exists for that task - the larryvrh set covers fl2va alone. Load it with the STOCK LoraLoaderModelOnly node, never with MiniMaxH3TurboLoRA: the two turbo lineages target different checkpoints, larryvrh the pruned one and lightx2v the full bf16, and larryvrh's node performs an adaln-curve injection specific to the pruned structure. Feeding it this file put the deltas on a path they were never computed for and the output came out in filaments. Both files here are the same LoRA from lightx2v: the 1.96 GB original, which is what has been validated, and Kijai's rank-20 repack at 0.31 GB, which measured identically on the clock but has not been judged by eye. Upstream distils and recommends 4 steps; in practice 4 produced artefacts on real material and 6 is the working value, off-distribution but better. Shift 12 video and 3 audio. Trained at 544p, and it holds well from 0.4 to 0.6 MP.",
+      "default": true,
       "files": [
         {
           "repo": "lightx2v/Minimax-h3-Turbo",
