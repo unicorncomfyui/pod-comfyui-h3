@@ -619,7 +619,23 @@ def main() -> int:
     if not args.workflow:
         p.error("a workflow is required (or use --list on its own)")
 
-    workflow = json.loads(Path(args.workflow).read_text(encoding="utf-8"))
+    # A bare `bench/x.json` is how the shipped graphs are named in every
+    # example, but the path resolves against the working directory - and there
+    # is no reason to be sitting in /app when running this. Fall back to the
+    # image's own workflow directory before giving up, and say which file was
+    # actually opened so a stale copy elsewhere cannot masquerade as this one.
+    wf_path = Path(args.workflow)
+    if not wf_path.is_file():
+        candidate = Path(COMFYUI_HOME).parent / "workflows" / args.workflow
+        if candidate.is_file():
+            wf_path = candidate
+        else:
+            log(f"[ERROR] Workflow not found: {args.workflow}")
+            log(f"        Tried {Path(args.workflow).resolve()}")
+            log(f"        and   {candidate}")
+            return 1
+    log(f"Workflow: {wf_path}")
+    workflow = json.loads(wf_path.read_text(encoding="utf-8"))
     if not all(isinstance(v, dict) and "class_type" in v for v in workflow.values()):
         log("[ERROR] This is not an API-format workflow.")
         log("        Re-export it from ComfyUI with Export (API).")
