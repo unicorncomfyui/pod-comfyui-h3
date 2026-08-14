@@ -36,7 +36,7 @@ fi
 #
 # Name ONE set: prewarming more than fits in RAM just evicts itself.
 # ---------------------------------------------------------------------------
-if [ -n "${PREWARM_SET}" ] && [ -n "${COMFYUI_DIR}" ]; then
+if [ -n "${PREWARM_SET:-}" ] && [ -n "${COMFYUI_DIR}" ]; then
     echo ""
     echo "Warming page cache for '${PREWARM_SET}'..."
     PREWARM_LIST=$(mktemp)

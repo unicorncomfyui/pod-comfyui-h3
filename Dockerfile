@@ -63,7 +63,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VSCODE_PORT=8080 \
     HF_HOME=/workspace/.cache/huggingface \
     DOWNLOAD_MODELS=true \
-    MODEL_SETS="minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8"
+    MODEL_SETS="minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8,minimax-h3-ref2v-turbo-lora"
 
 # Record the build parameters so a running pod can report exactly what it is.
 ENV BUILD_TORCH_INDEX=${TORCH_INDEX} \
@@ -277,12 +277,7 @@ RUN mkdir -p /app/comfyui/models/upscale_models \
              /root/.config/code-server \
              /root/.local/share/code-server/User \
     && wget -q -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
-        "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth" \
-    # Ready-made turbo workflow, staged onto the volume by start.sh - ComfyUI
-    # reads workflows from --user-directory, which points at the volume, so a
-    # copy left in the image would never be listed in the UI.
-    && wget -q -O /app/comfyui/user/default/workflows/minimax_h3_t2v_turbo.json \
-        "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/resolve/main/minimax_h3_t2v_turbo.json"
+        "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"
 
 # ---------------------------------------------------------------------------
 # 8 - Scripts and configs. Last because they change on almost every commit,

@@ -84,6 +84,36 @@ for wf in "$COMFYUI_HOME"/user/default/workflows/*.json; do
     fi
 done
 
+# The frontend picks its language from the browser on first load, so a French
+# browser gets a French ComfyUI - which is fine to work in and a nuisance to
+# export from: widget titles come out accented, and anything that reads the
+# export back as latin-1 turns them into mojibake. Comfy.Locale lives in the
+# user settings on the volume, so it can be defaulted here.
+#
+# Set the key only when it is ABSENT, never when it is present: the file also
+# holds every other choice the user has made, and a language they picked
+# themselves must survive a restart. Set COMFY_LOCALE to something else, or to
+# an empty string, to change or disable this.
+if [ -n "${COMFY_LOCALE:-en}" ]; then
+    python - "$DATA_DIR/user/default/comfy.settings.json" "${COMFY_LOCALE:-en}" <<'PY' || true
+import json, pathlib, sys
+path, locale = pathlib.Path(sys.argv[1]), sys.argv[2]
+try:
+    settings = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(settings, dict):
+        raise ValueError("settings file is not an object")
+except Exception as exc:
+    print(f"[WARN] Leaving {path.name} alone: {exc}")
+    raise SystemExit(0)
+if "Comfy.Locale" in settings:
+    raise SystemExit(0)
+settings["Comfy.Locale"] = locale
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(settings, indent=4) + "\n", encoding="utf-8")
+print(f"[OK] Interface language defaulted to '{locale}'")
+PY
+fi
+
 # And the input directory, for the same reason: --input-directory points at the
 # volume, so ComfyUI's own bundled example.png is never visible and a fresh pod
 # starts with nothing to load. A workflow that names an image no pod has is a

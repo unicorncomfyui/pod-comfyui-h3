@@ -182,10 +182,11 @@ The ones that matter:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8` | Which sets from `models/manifest.json` to download |
+| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8,minimax-h3-ref2v-turbo-lora` | Which sets from `models/manifest.json` to download |
 | `DOWNLOAD_MODELS` | `true` | Set `false` to boot without fetching weights |
 | `FAST_DISK` | `false` | Trade host RAM for disk when offloading — only worth it on a RAM-starved pod |
 | `PREWARM_SET` | — | Read one set into the page cache at boot. Recommended on a network volume |
+| `COMFY_LOCALE` | `en` | Interface language for a fresh volume. Never overrides a language already chosen |
 | `CACHE_LRU` | — | Keep N node results; skips re-encoding an unchanged prompt |
 | `FAST_MODE` | — | ComfyUI `--fast` features, or `all` |
 | `ASYNC_OFFLOAD_STREAMS` | 2 | Weight-offload streams |
@@ -215,8 +216,8 @@ of 12.
 
 It ships by default — 0.78 GB, and inert until a workflow loads it. To use it:
 
-1. Open the seeded `minimax_h3_t2v_turbo.json` workflow.
-2. Load `minimax_h3_turbo_4step_ckpt500.safetensors` between the model loader
+1. Open the seeded `minimax_h3_i2v_turbo.json` workflow.
+2. Load `minimax_h3_turbo_v4_step600_ema.safetensors` between the model loader
    and the sampler.
 3. Swap the sampler for **MiniMax-H3 Turbo Sampler (4-step)**, scheduler
    `simple`.

@@ -161,10 +161,11 @@ Les principales :
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8` | Quels sets de `models/manifest.json` télécharger |
+| `MODEL_SETS` | `minimax-h3-fl2va,minimax-h3-ref2va,minimax-h3-turbo-lora,minimax-h3-vae-int8,minimax-h3-ref2v-turbo-lora` | Quels sets de `models/manifest.json` télécharger |
 | `DOWNLOAD_MODELS` | `true` | `false` pour démarrer sans récupérer les poids |
 | `FAST_DISK` | `false` | Échange RAM hôte contre disque à l'offload — utile seulement sur un pod pauvre en RAM |
 | `PREWARM_SET` | — | Précharge un set dans le page cache au démarrage. Recommandé sur network volume |
+| `COMFY_LOCALE` | `en` | Langue de l'interface sur un volume neuf. N'écrase jamais une langue déjà choisie |
 | `VRAM_HEADROOM` | — | GB gardés libres ; à augmenter en cas d'OOM en cours de sampling |
 | `COMFYUI_EXTRA_ARGS` | — | Ajouté tel quel à la ligne de commande ComfyUI |
 | `CACHE_LRU` | — | `--cache-lru N` : évite de ré-encoder un prompt inchangé |
@@ -198,8 +199,8 @@ d'échantillonner en 4 steps au lieu de 12.
 Il est embarqué par défaut — 0,78 GB, et sans effet tant qu'un workflow ne le
 charge pas. Pour l'utiliser :
 
-1. Ouvre le workflow `minimax_h3_t2v_turbo.json`, déposé sur le volume.
-2. Charge `minimax_h3_turbo_4step_ckpt500.safetensors` entre le chargeur de
+1. Ouvre le workflow `minimax_h3_i2v_turbo.json`, déposé sur le volume.
+2. Charge `minimax_h3_turbo_v4_step600_ema.safetensors` entre le chargeur de
    modèle et l'échantillonneur.
 3. Remplace l'échantillonneur par **MiniMax-H3 Turbo Sampler (4-step)**,
    scheduler `simple`.
