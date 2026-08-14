@@ -215,8 +215,8 @@ of 12.
 
 It ships by default — 0.78 GB, and inert until a workflow loads it. To use it:
 
-1. Open the seeded `minimax_h3_t2v_turbo.json` workflow.
-2. Load `minimax_h3_turbo_4step_ckpt500.safetensors` between the model loader
+1. Open the seeded `minimax_h3_i2v_turbo.json` workflow.
+2. Load `minimax_h3_turbo_v4_step600_ema.safetensors` between the model loader
    and the sampler.
 3. Swap the sampler for **MiniMax-H3 Turbo Sampler (4-step)**, scheduler
    `simple`.

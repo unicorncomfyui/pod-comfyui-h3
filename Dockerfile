@@ -277,12 +277,7 @@ RUN mkdir -p /app/comfyui/models/upscale_models \
              /root/.config/code-server \
              /root/.local/share/code-server/User \
     && wget -q -O /app/comfyui/models/upscale_models/4x-UltraSharp.pth \
-        "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth" \
-    # Ready-made turbo workflow, staged onto the volume by start.sh - ComfyUI
-    # reads workflows from --user-directory, which points at the volume, so a
-    # copy left in the image would never be listed in the UI.
-    && wget -q -O /app/comfyui/user/default/workflows/minimax_h3_t2v_turbo.json \
-        "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/resolve/main/minimax_h3_t2v_turbo.json"
+        "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"
 
 # ---------------------------------------------------------------------------
 # 8 - Scripts and configs. Last because they change on almost every commit,

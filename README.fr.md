@@ -198,8 +198,8 @@ d'échantillonner en 4 steps au lieu de 12.
 Il est embarqué par défaut — 0,78 GB, et sans effet tant qu'un workflow ne le
 charge pas. Pour l'utiliser :
 
-1. Ouvre le workflow `minimax_h3_t2v_turbo.json`, déposé sur le volume.
-2. Charge `minimax_h3_turbo_4step_ckpt500.safetensors` entre le chargeur de
+1. Ouvre le workflow `minimax_h3_i2v_turbo.json`, déposé sur le volume.
+2. Charge `minimax_h3_turbo_v4_step600_ema.safetensors` entre le chargeur de
    modèle et l'échantillonneur.
 3. Remplace l'échantillonneur par **MiniMax-H3 Turbo Sampler (4-step)**,
    scheduler `simple`.
