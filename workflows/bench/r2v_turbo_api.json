@@ -1,0 +1,162 @@
+{
+  "92": {
+    "inputs": {
+      "filename_prefix": "video/MiniMax_H3_r2v_turbo",
+      "format": "auto",
+      "codec": "auto",
+      "video": ["130", 0]
+    },
+    "class_type": "SaveVideo",
+    "_meta": { "title": "Save Video" }
+  },
+  "115": {
+    "inputs": {
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 0.6,
+      "multiple": 32
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": { "title": "Resolution Selector (Size)" }
+  },
+  "119": {
+    "inputs": { "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors" },
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load VAE (video)" }
+  },
+  "120": {
+    "inputs": { "vae_name": "minimax_h3_audio_vae_fp32.safetensors" },
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load VAE (audio)" }
+  },
+  "121": {
+    "inputs": { "samples": ["125", 0], "vae": ["120", 0] },
+    "class_type": "VAEDecodeAudio",
+    "_meta": { "title": "VAE Decode Audio" }
+  },
+  "122": {
+    "inputs": { "samples": ["125", 0], "vae": ["119", 0] },
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" }
+  },
+  "123": {
+    "inputs": {},
+    "class_type": "MiniMaxH3TurboSampler",
+    "_meta": { "title": "MiniMax-H3 Turbo Sampler" }
+  },
+  "124": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 4,
+      "denoise": 1,
+      "model": ["142", 0]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": { "title": "Basic Scheduler" }
+  },
+  "125": {
+    "inputs": {
+      "noise": ["129", 0],
+      "guider": ["126", 0],
+      "sampler": ["123", 0],
+      "sigmas": ["124", 0],
+      "latent_image": ["136", 1]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": { "title": "Sampler Custom Advanced" }
+  },
+  "126": {
+    "inputs": { "model": ["142", 0], "conditioning": ["136", 0] },
+    "class_type": "BasicGuider",
+    "_meta": { "title": "Basic Guider" }
+  },
+  "127": {
+    "inputs": {
+      "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": { "title": "Load Diffusion Model" }
+  },
+  "128": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "Load CLIP" }
+  },
+  "129": {
+    "inputs": { "noise_seed": 1234 },
+    "class_type": "RandomNoise",
+    "_meta": { "title": "Random Noise" }
+  },
+  "130": {
+    "inputs": {
+      "fps": 24,
+      "bit_depth": 8,
+      "images": ["122", 0],
+      "audio": ["121", 0]
+    },
+    "class_type": "CreateVideo",
+    "_meta": { "title": "Create Video" }
+  },
+  "131": {
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": ["132", 0]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": { "title": "Frames from duration" }
+  },
+  "132": {
+    "inputs": { "value": 3.0 },
+    "class_type": "PrimitiveFloat",
+    "_meta": { "title": "Duration (seconds)" }
+  },
+  "136": {
+    "inputs": {
+      "prompt": ["138", 0],
+      "width": ["115", 0],
+      "height": ["115", 1],
+      "length": ["131", 1],
+      "ref_image_size": "match",
+      "clip": ["128", 0],
+      "vae": ["119", 0],
+      "audio_vae": ["120", 0],
+      "ref_images.ref_image_0": ["137", 0],
+      "ref_images.ref_image_1": ["137", 0],
+      "ref_images.ref_image_2": ["137", 0],
+      "ref_images.ref_image_3": ["137", 0]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": { "title": "MiniMax H3 Reference to Video" }
+  },
+  "137": {
+    "inputs": { "image": "transparent_rgb_gaming_mouse.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Load Image (bundled)" }
+  },
+  "138": {
+    "inputs": {
+      "value": "subject_definitions:\n<Subject 1> is the transparent gaming mouse shown in <Picture 1>, <Picture 2>, <Picture 3> and <Picture 4> - the same object throughout, its shell clear and its internals visible.\n<Subject 2> is a plain seamless studio backdrop in neutral grey.\n\nsummary:\n[reference generation] A single locked-off product shot of <Subject 1> on the backdrop of <Subject 2>, lit evenly, with no camera movement and nothing else in frame.\n\nretention_analysis:\n<Picture 1>: reference - the shape and transparency of <Subject 1> carry over.\n<Picture 2>: reference - the same object as in <Picture 1>.\n<Picture 3>: reference - the same object as in <Picture 1>.\n<Picture 4>: reference - the same object as in <Picture 1>.\n\ndetailed_description:\nThe target video is an even, neutral product recording with flat studio light and a muted palette.\n[Shot 1] A locked-off medium shot of <Subject 1> resting on the neutral grey backdrop of <Subject 2>, lit evenly from the front with no cast shadow behind it. The camera holds a static shot and does not move, pan, tilt or zoom at any point. The mouse does not move. A faint highlight travels slowly across its transparent shell from left to right and nothing else in the frame changes. No hand, no person and no other object appears at any point.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": { "title": "Input Text (Prompt)" }
+  },
+  "141": {
+    "inputs": {
+      "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "strength": 1,
+      "low_vram": false,
+      "model": ["127", 0]
+    },
+    "class_type": "MiniMaxH3TurboLoRA",
+    "_meta": { "title": "MiniMax-H3 Turbo LoRA" }
+  },
+  "142": {
+    "inputs": { "shift_video": 12, "shift_audio": 3, "model": ["141", 0] },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": { "title": "ModelSamplingMiniMaxH3" }
+  }
+}
