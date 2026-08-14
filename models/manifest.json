@@ -87,15 +87,9 @@
       ]
     },
     "minimax-h3-ref2v-turbo-lora": {
-      "description": "Step-distillation LoRA for ref2va, the only one that exists for that task - the larryvrh set covers fl2va alone. Load it with the STOCK LoraLoaderModelOnly node, never with MiniMaxH3TurboLoRA: the two turbo lineages target different checkpoints, larryvrh the pruned one and lightx2v the full bf16, and larryvrh's node performs an adaln-curve injection specific to the pruned structure. Feeding it this file put the deltas on a path they were never computed for and the output came out in filaments. Both files here are the same LoRA from lightx2v: the 1.96 GB original, which is what has been validated, and Kijai's rank-20 repack at 0.31 GB, which measured identically on the clock but has not been judged by eye. Upstream distils and recommends 4 steps; in practice 4 produced artefacts on real material and 6 is the working value, off-distribution but better. Shift 12 video and 3 audio. Trained at 544p, and it holds well from 0.4 to 0.6 MP.",
+      "description": "Step-distillation LoRA for ref2va, the only one that exists for that task - the larryvrh set covers fl2va alone. Load it with the STOCK LoraLoaderModelOnly node, never with MiniMaxH3TurboLoRA: the two turbo lineages target different checkpoints, larryvrh the pruned one and lightx2v the full bf16, and larryvrh's node performs an adaln-curve injection specific to the pruned structure. Feeding it this file put the deltas on a path they were never computed for and the output came out in filaments. This is Kijai's rank-20 repack of lightx2v's LoRA - the author's name inside the filename is the author of the original, not of the repack. Measured against the 1.96 GB full-rank original twice: +1.3% against a 1.6% spread, indistinguishable on the clock, indistinguishable by eye on a fixed seed, and 0.6 GB lighter in steady-state VRAM across every run. Six times smaller for nothing given up, so the original is not shipped; fetch it from lightx2v/Minimax-h3-Turbo if a comparison is ever needed again. Upstream distils and recommends 4 steps, but that assumes their bf16 base: on a pruned int8 checkpoint the delta lands on rounded weights, the distilled trajectory is only approximated, and 4 steps have no room to recover it. Six is the working value here and the two extra steps are the price of the quantisation. Shift 12 video and 3 audio. Trained at 544p, and it holds well from 0.4 to 0.6 MP.",
       "default": true,
       "files": [
-        {
-          "repo": "lightx2v/Minimax-h3-Turbo",
-          "path": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
-          "dest": "loras",
-          "size_gb": 1.96
-        },
         {
           "repo": "Kijai/MiniMax-H3_comfy",
           "path": "loras/minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors",
