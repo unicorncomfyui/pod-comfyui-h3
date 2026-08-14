@@ -86,6 +86,24 @@
         }
       ]
     },
+    "minimax-h3-ref2v-turbo-lora": {
+      "description": "Step-distillation LoRA for ref2va, the only one that exists for that task - the larryvrh set covers fl2va alone. Both files are the same LoRA from lightx2v: the 1.96 GB original and Kijai's rank-20 repack at 0.31 GB, six times smaller. Ship both and judge whether the compression costs anything, then drop one. Upstream specs it at 4 steps exactly (distilled on 4 NFE), video shift 12 and audio shift 3, trained at 544p with mixed aspect ratios - so it goes off-distribution above 6 steps and above roughly 640 on the short edge, while the base ref2va model's native canvas is 768. Off by default until measured.",
+      "default": false,
+      "files": [
+        {
+          "repo": "lightx2v/Minimax-h3-Turbo",
+          "path": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+          "dest": "loras",
+          "size_gb": 1.96
+        },
+        {
+          "repo": "Kijai/MiniMax-H3_comfy",
+          "path": "loras/minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors",
+          "dest": "loras",
+          "size_gb": 0.31
+        }
+      ]
+    },
     "minimax-h3-fp8": {
       "description": "MiniMax H3 fl2va in fp8_scaled instead of int8_convrot. Alternative quantisation - try it if int8 convrot misbehaves on your driver.",
       "default": false,
