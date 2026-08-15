@@ -176,6 +176,20 @@ RUN git clone --filter=blob:none https://github.com/Comfy-Org/ComfyUI-Manager.gi
     # Sampler for the step-distillation LoRA: 4 steps instead of 12.
     && git clone --filter=blob:none https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo.git \
     && git -C ComfyUI-MiniMax-H3-Turbo checkout -q 55fee864dd7b2976b1c4ce3c3d5f7968f181409f \
+    # Writes H3 prompts from a brief and your reference images, using a local
+    # vision-language model. It registers NO nodes - NODE_CLASS_MAPPINGS is
+    # empty and it is a routes-plus-frontend extension, reached from the
+    # Extensions menu, so no workflow can hold it and no graph breaks if it is
+    # removed. Its requirements.txt is deliberately empty, which is why it can
+    # sit in this layer for free.
+    #
+    # requirements-gguf.txt is NOT installed and must not be: it pulls
+    # llama-cpp-python, which builds from source and would need the toolchain
+    # this image does not carry. That file backs the extension's Direct GGUF
+    # provider; scripts/promptgen.sh serves the model over HTTP instead, which
+    # needs nothing inside the venv.
+    && git clone --filter=blob:none https://github.com/duckyshell/ComfyUI-MiniMaxH3-Prompt-Writer.git \
+    && git -C ComfyUI-MiniMaxH3-Prompt-Writer checkout -q 9e08c9b590933408efac27f770acbd0a55a59833 \
     && for dir in /app/comfyui/custom_nodes/*/; do \
         if [ -f "${dir}requirements.txt" ]; then \
             pip install --no-cache-dir -r "${dir}requirements.txt" || \
@@ -288,6 +302,8 @@ COPY models/manifest.json /app/models/manifest.json
 COPY scripts/download_models.py /app/scripts/download_models.py
 COPY scripts/bench.py /app/scripts/bench.py
 COPY scripts/worker.py /app/scripts/worker.py
+COPY scripts/prompt_ab.py /app/scripts/prompt_ab.py
+COPY scripts/promptgen.sh /app/scripts/promptgen.sh
 # API-format templates the worker injects into, plus a sample job. Kept out of
 # ComfyUI's own workflow directory on purpose: these are the /prompt payload
 # shape, not the editor's, and the UI would list them as broken graphs.
@@ -315,8 +331,8 @@ COPY config/code-server-config.yaml /root/.config/code-server/config.yaml
 COPY config/vscode-settings.json /root/.local/share/code-server/User/settings.json
 
 # Normalise line endings in case of a checkout from Windows.
-RUN sed -i 's/\r$//' /app/init.sh /app/start.sh /app/fetch_models.sh \
-    && chmod +x /app/init.sh /app/start.sh /app/fetch_models.sh
+RUN sed -i 's/\r$//' /app/init.sh /app/start.sh /app/fetch_models.sh /app/scripts/promptgen.sh \
+    && chmod +x /app/init.sh /app/start.sh /app/fetch_models.sh /app/scripts/promptgen.sh
 
 # Declare the driver we actually need, not the one the base tag implies.
 #

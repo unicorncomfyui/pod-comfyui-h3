@@ -1,0 +1,19 @@
+subject_definitions:
+<Subject 1> is the transparent gaming mouse shown in <Picture 1> and <Picture 2> - the same object in both, its shell clear and its internals visible.
+
+summary:
+[reference generation] A single locked-off product shot of <Subject 1> on a neutral grey backdrop, lit evenly, with no camera movement and nothing else in frame.
+
+retention_analysis:
+<Picture 1>: fully_preserved - the shape and transparency of <Subject 1> carry over.
+<Picture 2>: fully_preserved - the same object as in <Picture 1>.
+
+detailed_description:
+The target video is an even, neutral product recording with flat studio light and a muted palette.
+[Shot 1] A locked-off medium shot of <Subject 1> resting on a neutral grey backdrop, lit evenly from the front with no cast shadow behind it. The camera holds a static shot and does not move, pan, tilt or zoom at any point. The mouse does not move. A faint highlight travels slowly across its transparent shell from left to right and nothing else in the frame changes. No hand, no person and no other object appears at any point.
+
+overall_soundscape:
+N/A
+
+non_diegetic_music:
+N/A
