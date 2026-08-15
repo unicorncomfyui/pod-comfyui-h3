@@ -65,6 +65,27 @@ PIDFILE="$PREFIX/ollama.pid"
 
 log() { echo "$*"; }
 
+# A pod template stores environment variables verbatim - it runs no shell, so
+# "$DATA_DIR/promptgen" is stored as those characters and arrives here as a
+# path with a dollar sign in it. Nothing then fails: mkdir happily creates a
+# directory called '$DATA_DIR', the weights land inside it, and the only
+# symptom is a status line that reads like a bug in this script. Refuse it at
+# the top instead, where the fix is obvious.
+for _var in PREFIX OLLAMA_MODELS; do
+    case "$(eval "printf '%s' \"\${$_var}\"")" in
+        *'$'*)
+            log "[ERROR] $_var contains an unexpanded variable:"
+            log "          $(eval "printf '%s' \"\${$_var}\"")"
+            log "        A pod template does not run a shell, so it cannot"
+            log "        expand \$DATA_DIR. Either write the path out in full,"
+            log "        or clear PROMPTGEN_PREFIX and OLLAMA_MODELS and let"
+            log "        this script derive them."
+            exit 2
+            ;;
+    esac
+done
+unset _var
+
 vram_note() {
     log ""
     log "  The card holds one of these at a time, not both:"
