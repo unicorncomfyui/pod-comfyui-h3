@@ -137,6 +137,33 @@ ensure_installed() {
     log "[OK] Runtime installed at $PREFIX"
 }
 
+link_cli() {
+    # The extension decides between "not running" and "not installed" with
+    # shutil.which("ollama"), and only reaches that branch once its HTTP probe
+    # has already failed. Without this link a stopped service reports itself as
+    # missing software, and the offered fix - download and install Ollama - is
+    # the one thing that is already done. A wrong diagnosis costs more than the
+    # outage it describes.
+    #
+    # /usr/local/bin and not the volume: it is on PATH for every process in the
+    # container including ComfyUI's, and it dies with the pod, which is correct.
+    # The runtime is re-linked on each start, and start has to run each boot
+    # anyway since nothing supervises this service.
+    #
+    # A symlink rather than a copy: Ollama locates its bundled CUDA libraries
+    # from /proc/self/exe, which resolves to the real path, so lib/ is still
+    # found beside it.
+    [ -x "$BIN" ] || return 0
+    if [ ! -e /usr/local/bin/ollama ] || \
+       [ "$(readlink -f /usr/local/bin/ollama 2>/dev/null)" != "$(readlink -f "$BIN")" ]; then
+        ln -sf "$BIN" /usr/local/bin/ollama 2>/dev/null \
+            && log "[OK] ollama linked onto PATH" \
+            || log "[WARN] Could not link onto PATH - a stopped service will be"
+        [ -e /usr/local/bin/ollama ] || \
+            log "       reported by the extension as 'not installed'."
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Server lifecycle
 # ---------------------------------------------------------------------------
@@ -185,6 +212,7 @@ pull_model() {
 case "${1:-start}" in
     start)
         ensure_installed
+        link_cli
         start_server
         pull_model "$PROMPTGEN_MODEL"
         log ""
@@ -245,6 +273,7 @@ case "${1:-start}" in
 
     pull)
         ensure_installed
+        link_cli
         start_server
         pull_model "${2:?usage: promptgen.sh pull TAG}"
         ;;
