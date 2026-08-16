@@ -793,6 +793,68 @@ def cmd_templates(args) -> int:
     return 0
 
 
+def cmd_action(args) -> int:
+    """start / stop / restart a pod.
+
+    `stop` is the one that matters here: it releases the GPU while KEEPING the
+    disk, so a pod that has already pulled 68 GB of weights can be parked and
+    woken up with them still in place. On host-local storage that is the only
+    way to avoid paying the download again, short of a network volume.
+
+    The bet it takes: a stopped pod has given its GPU back, and starting it
+    again needs one to be free on that same machine. In a zone reporting LOW
+    stock - which is what Europe reports for a 5090 - that is not a promise.
+    Park a pod you can afford to lose, or terminate and re-download.
+    """
+    pod = api("GET", f"/pods/{args.pod_id}")
+    allowed = pod.get("actions") or []
+    if allowed and args.action not in allowed:
+        log(f"[ERROR] '{args.action}' is not valid from {pod.get('status')}.")
+        log(f"        The pod publishes what it will accept: "
+            f"{', '.join(allowed) or 'nothing'}")
+        return 2
+
+    api("POST", f"/pods/{args.pod_id}/action", body={"action": args.action})
+    log(f"[OK] {args.action} sent to {args.pod_id}.")
+    if args.action == "stop":
+        log("     Compute released; the disk stays and keeps billing.")
+        log(f"     Wake it with: python {sys.argv[0]} start {args.pod_id}")
+        log("     A GPU has to be free on that machine for it to come back.")
+    return 0
+
+
+def cmd_cost(args) -> int:
+    """What was actually spent, per pod.
+
+    The hourly rate on a running pod says what it costs from now on; this says
+    what it has already cost. Those are different questions, and the second is
+    the one asked after finding a pod that ran all weekend.
+    """
+    query = {"lastN": args.last, "bucketSize": args.bucket}
+    if args.pod_id:
+        query["podId"] = args.pod_id
+    body = api("GET", "/billing/pods", query=query)
+    records = (body or {}).get("records") or []
+    if not records:
+        log("No billing records in that window.")
+        return 0
+
+    log(f"{'from':<22}{'pod':<18}{'gpu':>9}{'disk':>9}{'total':>10}")
+    for r in sorted(records, key=lambda x: str(x.get("startTime"))):
+        log(f"{str(r.get('startTime',''))[:19]:<22}"
+            f"{str(r.get('podId','')):<18}"
+            f"{r.get('gpuAmount') or 0:>9.2f}"
+            f"{r.get('diskAmount') or 0:>9.2f}"
+            f"{r.get('totalAmount') or 0:>10.2f}")
+
+    totals = ((body.get("metadata") or {}).get("totals") or {})
+    log(f"\n{len(records)} record(s) over {(body.get('metadata') or {}).get('uniquePodCount', '?')} "
+        f"pod(s): {totals.get('totalAmount') or 0:.2f} $ "
+        f"({totals.get('gpuAmount') or 0:.2f} compute, "
+        f"{totals.get('diskAmount') or 0:.2f} disk)")
+    return 0
+
+
 def cmd_show(args) -> int:
     """One pod, by id.
 
@@ -948,6 +1010,21 @@ def main() -> int:
     tp.add_argument("--public", action="store_true",
                     help="the public catalogue instead of your own")
     tp.set_defaults(func=cmd_templates)
+
+    for act, helptext in [
+            ("stop", "release the GPU but keep the disk and its models"),
+            ("start", "wake a stopped pod, disk intact"),
+            ("restart", "restart the container in place")]:
+        a = sub.add_parser(act, help=helptext)
+        a.add_argument("pod_id")
+        a.set_defaults(func=cmd_action, action=act)
+
+    ct = sub.add_parser("cost", help="what pods have actually spent")
+    ct.add_argument("pod_id", nargs="?", help="one pod, or omit for all")
+    ct.add_argument("--last", type=int, default=7, metavar="N",
+                    help="most recent N buckets (default 7)")
+    ct.add_argument("--bucket", default="day", help="hour or day (default day)")
+    ct.set_defaults(func=cmd_cost)
 
     sh = sub.add_parser("show", help="one pod by id - state, storage, load")
     sh.add_argument("pod_id")
