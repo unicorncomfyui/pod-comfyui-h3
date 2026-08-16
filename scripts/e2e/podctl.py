@@ -126,6 +126,9 @@ def api(method: str, path: str, body: dict | None = None,
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
+        # Stashed, because the body can only be read once and callers need it:
+        # whether a 400 is a bad request or a shortage is decided by its text.
+        e._body = detail  # noqa: SLF001
         log(f"[ERROR] {method} {path} -> {e.code}")
         # A 403 carrying Cloudflare's 1010 never reached RunPod, so it says
         # nothing about the key. Left unexplained it sends you back to the
@@ -494,14 +497,26 @@ def _up_once(args):
     # says only "failed to create pod".
     if args.gpu and not args.no_precheck:
         try:
-            stock = gpu_availability(args.gpu, args.datacenter)
-            if stock:
-                note("Stock      " + "   ".join(f"{k} {v}" for k, v in stock.items()))
+            everywhere = gpu_availability(args.gpu)
+            here = {k: v for k, v in everywhere.items()
+                    if not args.datacenter or k in args.datacenter}
+            if here:
+                note("Stock      " + "   ".join(f"{k} {v}" for k, v in here.items()))
             else:
-                note(f"[WARN] The catalogue reports no stock for '{args.gpu}'"
+                note(f"[WARN] No stock for '{args.gpu}'"
                      + (f" in {', '.join(args.datacenter)}" if args.datacenter else "")
-                     + ". Creating anyway - availability moves by the minute - "
-                       "but a failure here is capacity, not configuration.")
+                     + " right now.")
+                # Naming where it IS turns a dead end into one edit. Without
+                # this the advice is "widen the search" and the reader has to
+                # go run the catalogue themselves to find out where.
+                elsewhere = {k: v for k, v in everywhere.items()
+                             if k not in (args.datacenter or [])}
+                if elsewhere:
+                    note("       It is available in: "
+                         + "   ".join(f"{k} {v}" for k, v in elsewhere.items()))
+                else:
+                    note("       And nowhere else either - this GPU type has no "
+                         "stock anywhere at the moment.")
         except Exception:  # noqa: BLE001 - a hint must never block a deploy
             pass
 
@@ -516,6 +531,15 @@ def _up_once(args):
         if e.code >= 500 or e.code == 429:
             log(f"       Failed on the API's side ({e.code}). That spends this "
                 f"attempt, not the run.")
+            return "capacity"
+        # A 400 normally means the body was wrong and retrying is pointless.
+        # This one is the exception, and it says so itself: "There are no
+        # longer any instances available with the requested specifications.
+        # Please refresh and try again." Treating it like a validation error
+        # ended a three-attempt run on its first try.
+        if e.code == 400 and NO_CAPACITY.search(getattr(e, "_body", "") or ""):
+            log("       The zone ran out between the catalogue lookup and the "
+                "request. Attempt spent, run continues.")
             return "capacity"
         raise
     pod_id = pod.get("id")
@@ -848,26 +872,27 @@ def cmd_templates(args) -> int:
     return 0
 
 
-def gpu_availability(gpu_id: str, datacenters: list) -> dict:
-    """{zone: level} for one GPU type, restricted to the zones asked for.
+# The API reports a shortage as a 400 whose body asks you to try again:
+# "There are no longer any instances available with the requested
+# specifications. Please refresh and try again." A 400 normally means the
+# request was wrong and retrying is pointless - this one means the opposite,
+# so it is matched on rather than lumped in with real validation failures.
+NO_CAPACITY = re.compile(
+    r"(?i)no longer any instances|no instances available|"
+    r"instances available with the requested|insufficient capacity")
 
-    Only the zones with stock are returned, so an empty result means the
-    placement about to be attempted has nowhere to land.
-    """
+
+def gpu_availability(gpu_id: str) -> dict:
+    """{zone: level} for one GPU type, every zone reporting stock right now."""
     body = api("GET", "/catalog/gpus", query={
         "include": ["AVAILABILITY"], "product": ["POD"], "cloud": "SECURE"})
     rows = body.get("gpus") if isinstance(body, dict) else body
     for g in rows or []:
         if str(g.get("id")) != gpu_id:
             continue
-        out = {}
-        for d in g.get("dataCenters") or []:
-            if d.get("availability") == "NONE":
-                continue
-            if datacenters and d.get("id") not in datacenters:
-                continue
-            out[d.get("id")] = d.get("availability")
-        return out
+        return {d.get("id"): d.get("availability")
+                for d in g.get("dataCenters") or []
+                if d.get("availability") != "NONE"}
     return {}
 
 
