@@ -49,6 +49,13 @@ API = os.environ.get("RUNPOD_API_BASE", "https://api.runpod.io/v2")
 # a minor version moved would be worse than the drift it protects against.
 SPEC_MAJOR = "2"
 
+# urllib announces itself as "Python-urllib/3.x", and the edge in front of the
+# API rejects that signature with a Cloudflare 403 before RunPod ever sees the
+# request. It looks exactly like a permissions failure and it is not: the same
+# call succeeds with any other agent. Naming the tool also means a support
+# request can be traced to it.
+USER_AGENT = "podctl/1.0 (+https://github.com/unicorncomfyui/pod-comfyui-h3)"
+
 IMAGE = os.environ.get("E2E_IMAGE", "vlop12ui/pod-comfyui-h3:cu130-develop")
 
 
@@ -95,6 +102,7 @@ def api(method: str, path: str, body: dict | None = None,
     req = urllib.request.Request(url, data=data, method=method, headers={
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
     })
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -103,17 +111,28 @@ def api(method: str, path: str, body: dict | None = None,
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
         log(f"[ERROR] {method} {path} -> {e.code}")
-        try:
-            log("        " + json.dumps(json.loads(detail))[:500])
-        except json.JSONDecodeError:
-            log("        " + detail[:500])
+        # A 403 carrying Cloudflare's 1010 never reached RunPod, so it says
+        # nothing about the key. Left unexplained it sends you back to the
+        # permissions screen, which is the one place the answer is not.
+        if e.code == 403 and "1010" in detail:
+            log("        Blocked by the edge on the client signature, not by "
+                "RunPod.")
+            log("        This is not a permissions problem - the request never "
+                "arrived.")
+        else:
+            try:
+                log("        " + json.dumps(json.loads(detail))[:500])
+            except json.JSONDecodeError:
+                log("        " + detail[:500])
         raise
 
 
 def check_spec() -> None:
     """Read the served spec version once, so drift is announced not guessed."""
     try:
-        with urllib.request.urlopen(f"{API}/openapi.json", timeout=20) as r:
+        req = urllib.request.Request(f"{API}/openapi.json",
+                                     headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as r:
             version = str(json.loads(r.read()).get("info", {}).get("version", ""))
     except Exception:  # noqa: BLE001 - never let a check block a teardown
         return
@@ -341,4 +360,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except urllib.error.HTTPError:
+        # api() has already printed the status, the path and whatever the body
+        # explained. A traceback on top of that adds twenty lines of urllib
+        # internals and buries the one line that matters.
+        sys.exit(1)
+    except KeyboardInterrupt:
+        log("\n[WARN] Interrupted. If a pod was created, check `ls` - it is "
+            "still billing.")
+        sys.exit(130)
