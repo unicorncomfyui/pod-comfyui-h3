@@ -500,8 +500,12 @@ def _up_once(args):
             gib = wait_for_ram(pod_id)
             ram = gib_to_gb(gib) if gib is not None else None
             if ram is None:
-                log("[WARN] Could not read the pod's RAM from its log within "
-                    "3 min. Left running - check it yourself.")
+                log("")
+                log("[WARN] The memory limit never appeared in the log, so the")
+                log("       machine could not be checked. The pod is LEFT")
+                log("       RUNNING and is billing:")
+                log(f"         python {sys.argv[0]} logs {pod_id} --follow")
+                log(f"         python {sys.argv[0]} down {pod_id}")
                 return 0
             if ram >= args.min_ram:
                 log(f"[OK] {ram} GB of RAM ({gib} GiB as the cgroup reports "
@@ -676,11 +680,33 @@ def wait_for_ram(pod_id: str, timeout: int = 180) -> int | None:
     """
     deadline = time.time() + timeout
     log(f"  reading the pod's log for its memory limit "
-        f"(up to {timeout // 60} min)...")
+        f"(up to {timeout // 60} min, ^C to stop waiting)")
+
+    seen, tick = [], time.time()
     for line in stream_logs(pod_id, tail=1000, idle=30, deadline=deadline):
+        seen.append(line)
         m = RAM_LINE.search(line)
         if m:
+            log(f"  {line.strip()[:100]}")
             return int(m.group(1))
+        # A silent wait is indistinguishable from a hang, which is exactly how
+        # this looked. SSE servers send keep-alive frames, so the socket never
+        # goes quiet and the idle timeout never fires - the only honest signal
+        # that work is happening is to say how much log has gone by.
+        if time.time() - tick > 15:
+            log(f"  ... {len(seen)} line(s) so far, still looking")
+            tick = time.time()
+
+    # Nothing matched. The tail is worth more than the failure message: it says
+    # whether the container never started, died early, or simply has not
+    # reached init.sh yet.
+    if seen:
+        log("  last lines seen:")
+        for line in seen[-12:]:
+            log(f"    | {line.rstrip()[:110]}")
+    else:
+        log("  the pod produced no log at all in that window - RUNNING is the "
+            "allocation, not the container.")
     return None
 
 
