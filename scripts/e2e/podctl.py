@@ -793,6 +793,61 @@ def cmd_templates(args) -> int:
     return 0
 
 
+def cmd_show(args) -> int:
+    """One pod, by id.
+
+    Sharper than `ls` when something is missing: the listing is scoped to the
+    authenticated user, so a pod that answers here while being absent there
+    says the problem is whose list you are reading, not whether the pod
+    exists. A 404 says the opposite - it is genuinely gone.
+    """
+    try:
+        pod = api("GET", f"/pods/{args.pod_id}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            log(f"No pod {args.pod_id} under this key.")
+            log("  Either it was terminated - terminated pods disappear rather")
+            log("  than lingering in a state - or the pod belongs to another")
+            log("  account and this key cannot see it.")
+            return 1
+        raise
+
+    if args.json:
+        log(json.dumps(redact(pod), indent=2))
+        return 0
+
+    runtime = pod.get("runtime") or {}
+    uptime = runtime.get("uptime")
+    log(f"  id           {pod.get('id')}")
+    log(f"  name         {pod.get('name')}")
+    log(f"  status       {pod.get('status')}"
+        + (f"   up {uptime // 60} min" if isinstance(uptime, int) else ""))
+    log(f"  image        {pod.get('image')}")
+    describe(pod)
+
+    # Utilisation, when the pod is running. Not a size - the API reports these
+    # as percentages - but enough to tell a wedged container from a working one
+    # without opening a shell.
+    if runtime:
+        mem = (runtime.get("memory") or {}).get("util")
+        cpu = (runtime.get("cpu") or {}).get("util")
+        gpus = [g.get("gpuUtil") or g.get("util")
+                for g in (runtime.get("gpus") or [])]
+        parts = []
+        if cpu is not None:
+            parts.append(f"cpu {cpu}%")
+        if mem is not None:
+            parts.append(f"mem {mem}%")
+        if gpus:
+            parts.append("gpu " + "/".join(f"{g}%" for g in gpus if g is not None))
+        if parts:
+            log(f"  utilisation  {'   '.join(parts)}")
+    elif pod.get("status") == "RUNNING":
+        log("  utilisation  not reported yet - RUNNING is the allocation, the "
+            "container may still be starting")
+    return 0
+
+
 def cmd_logs(args) -> int:
     n = 0
     deadline = None if args.follow else time.time() + args.timeout
@@ -893,6 +948,12 @@ def main() -> int:
     tp.add_argument("--public", action="store_true",
                     help="the public catalogue instead of your own")
     tp.set_defaults(func=cmd_templates)
+
+    sh = sub.add_parser("show", help="one pod by id - state, storage, load")
+    sh.add_argument("pod_id")
+    sh.add_argument("--json", action="store_true",
+                    help="the raw object, env redacted")
+    sh.set_defaults(func=cmd_show)
 
     g = sub.add_parser("logs", help="container logs, without a shell")
     g.add_argument("pod_id")
