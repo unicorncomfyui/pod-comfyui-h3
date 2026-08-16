@@ -750,7 +750,12 @@ def wait_for_ram(pod_id: str, timeout: int = 180) -> int | None:
         f"(up to {timeout // 60} min, ^C to stop waiting)")
 
     seen, tick = [], time.time()
-    for line in stream_logs(pod_id, tail=1000, idle=30, deadline=deadline):
+    # The endpoint's documented maximum, and it is wanted. The memory line is
+    # printed by init.sh at boot, while ComfyUI-Manager and the model fetcher
+    # go on to emit thousands more - so on a pod that has been up for a few
+    # minutes the line has already scrolled past a smaller backfill and would
+    # never be found. Observed live at line 1827 on a pod still starting.
+    for line in stream_logs(pod_id, tail=5000, idle=30, deadline=deadline):
         seen.append(line)
         m = RAM_LINE.search(line)
         if m:
