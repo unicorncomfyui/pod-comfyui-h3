@@ -497,18 +497,19 @@ def _up_once(args):
             # so a machine that is too small costs a boot rather than a run -
             # which is the cheap end of a mistake that would otherwise surface
             # as an offloader thrashing mid-generation.
-            ram = wait_for_ram(pod_id)
+            gib = wait_for_ram(pod_id)
+            ram = gib_to_gb(gib) if gib is not None else None
             if ram is None:
                 log("[WARN] Could not read the pod's RAM from its log within "
                     "3 min. Left running - check it yourself.")
                 return 0
             if ram >= args.min_ram:
-                log(f"[OK] {ram} GB of RAM, at or above the {args.min_ram} GB "
-                    f"asked for.")
+                log(f"[OK] {ram} GB of RAM ({gib} GiB as the cgroup reports "
+                    f"it), at or above the {args.min_ram} GB asked for.")
                 return 0
-            log(f"[ERROR] {ram} GB of RAM, below the {args.min_ram} GB asked "
-                f"for. The API cannot request memory, so this is the only "
-                f"place it can be caught.")
+            log(f"[ERROR] {ram} GB of RAM ({gib} GiB in the log), below the "
+                f"{args.min_ram} GB asked for. The API cannot request memory, "
+                f"so this is the only place it can be caught.")
             if args.keep:
                 log("       Left running as asked.")
                 return 1
@@ -649,6 +650,21 @@ RAM_LINE = re.compile(
     r"(?:memory limit read from cgroup|reporting host RAM):\s*(\d+)\s*GB")
 
 
+def gib_to_gb(gib: int) -> int:
+    """Restate a GiB figure in the decimal GB the machine was sold as.
+
+    init.sh divides the cgroup limit by 1024 three times and labels the result
+    "GB", so a pod Runpod advertises as 92 GB reports 86. Comparing a threshold
+    the operator typed - who is thinking of the console and the invoice -
+    against that number rejects machines that are exactly the right size, which
+    is what four wasted attempts in a row looked like.
+
+    bench.py already gets this right and says so in a comment; this is the same
+    correction applied where the decision is made.
+    """
+    return round(gib * 1024 ** 3 / 1e9)
+
+
 def wait_for_ram(pod_id: str, timeout: int = 180) -> int | None:
     """Host RAM in GB, read out of the pod's own boot log.
 
@@ -756,7 +772,7 @@ def main() -> int:
                         "it dies with the host. Ignored when --volume is given")
     u.add_argument("--env", action="append", default=[], help="KEY=value")
     u.add_argument("--min-ram", type=int, default=0, metavar="GB",
-                   help="reject the machine if it reports less host RAM than this. Checked AFTER boot from the pod's own log - the API has no memory filter for GPU pods and does not report it either")
+                   help="reject the machine if it has less host RAM than this, in the decimal GB Runpod advertises - 92 means the 92 GB offer, not the 86 GiB its cgroup reports. Checked AFTER boot from the pod's own log: the API has no memory filter for GPU pods and does not report it either")
     u.add_argument("--attempts", type=int, default=1, metavar="N",
                    help="draw up to N machines until one meets --min-ram, terminating each that does not. Only useful with --min-ram")
     u.add_argument("--timeout", type=int, default=600)
