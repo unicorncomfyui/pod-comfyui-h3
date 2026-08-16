@@ -466,6 +466,7 @@ def cmd_up(args) -> int:
             last = status
         if status == "RUNNING":
             log(f"\n[OK] Running after {int(time.time() - (deadline - args.timeout))} s.")
+            describe(state)
             if not args.min_ram:
                 return 0
             # The one check that cannot be a filter. Asked for after the fact,
@@ -537,6 +538,41 @@ def cmd_ls(args) -> int:
             f"{str(gpu)[:29]:<30}{p.get('name','')}")
     log(f"\n{len(pods)} pod(s). Anything RUNNING here is being charged for.")
     return 0
+
+
+def describe(pod: dict) -> None:
+    """Say what was actually created, not what was asked for.
+
+    A template is resolved server-side, so the request body says nothing about
+    the disk or the mount the pod ends up with - and a template that carries no
+    persistent mount produces a pod with only its container disk, silently. The
+    first sign of that is otherwise a download failing at 10 GB, an hour later,
+    with nothing on screen having suggested it.
+    """
+    mounts = pod.get("mounts") or {}
+    persistent = (mounts.get("persistent") or {}).get("size")
+    network = [m.get("volumeId") for m in (mounts.get("network") or [])]
+    disk = pod.get("disk")
+
+    log(f"  data centre  {pod.get('dataCenterId') or '?'}"
+        f"   cuda {pod.get('cudaVersion') or '?'}"
+        f"   {pod.get('cost') or 0} $/h")
+    if network:
+        log(f"  storage      network volume {', '.join(str(v) for v in network)}"
+            f"   + {disk} GB container disk")
+    elif persistent:
+        log(f"  storage      {persistent} GB at /workspace"
+            f"   + {disk} GB container disk")
+    else:
+        log(f"  storage      NO PERSISTENT MOUNT - {disk} GB container disk only")
+        # 40 GB is below the smallest useful model set, so at that point the
+        # download cannot succeed whatever else is configured.
+        if isinstance(disk, int) and disk < 40:
+            log("")
+            log("[WARN] Nothing is mounted at /workspace and the container disk")
+            log(f"       is {disk} GB. If this pod downloads models it will run")
+            log("       out of room. A template only supplies a mount if one was")
+            log("       saved into it - pass --workspace GB to attach one.")
 
 
 def fetch_logs(pod_id: str) -> str:
