@@ -161,6 +161,15 @@ def build_request(args) -> dict:
         # travel together or not at all.
         body["mounts"] = {"network": [{"volumeId": args.volume,
                                        "path": "/workspace"}]}
+    elif args.workspace:
+        # Host-local persistent storage: RunPod's "volume disk". Faster than a
+        # network volume and it needs no data centre pin, so the scheduler
+        # keeps the whole fleet to choose from - which matters when healthy
+        # hosts are the scarce thing. The trade is that it is pinned to one
+        # machine and dies with it, so the next pod re-downloads everything.
+        # Right for a smoke test, wrong for anything you cannot recreate.
+        body["mounts"] = {"persistent": {"size": args.workspace,
+                                         "path": "/workspace"}}
     for pair in args.env:
         k, _, v = pair.partition("=")
         body["env"][k] = v
@@ -272,6 +281,10 @@ def main() -> int:
     u.add_argument("--datacenter", action="append", default=[],
                    help="pin placement; repeatable. Required with --volume")
     u.add_argument("--volume", help="network volume id, same data centre")
+    u.add_argument("--workspace", type=int, metavar="GB",
+                   help="host-local persistent disk at /workspace, in GB. "
+                        "No data centre pin needed, but it dies with the "
+                        "host. Ignored when --volume is given")
     u.add_argument("--env", action="append", default=[], help="KEY=value")
     u.add_argument("--timeout", type=int, default=600)
     u.add_argument("--keep", action="store_true",
