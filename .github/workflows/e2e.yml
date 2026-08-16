@@ -98,6 +98,7 @@ jobs:
             --min-ram "${{ inputs.min_ram }}" \
             --attempts "${{ inputs.attempts }}" \
             --name "$POD_NAME" \
+            --id-file pod.id \
             --env "DOWNLOAD_MODELS=${{ inputs.download_models }}" \
             $(for dc in $(echo "${{ inputs.datacenters }}" | tr ',' ' '); do
                 printf -- '--datacenter %s ' "$dc"; done)
@@ -112,12 +113,11 @@ jobs:
       - name: Boot log
         if: always()
         run: |
-          POD=$(python scripts/e2e/podctl.py ls \
-                | awk -v n="$POD_NAME" '$0 ~ n {print $1; exit}')
+          POD=$(cat pod.id 2>/dev/null || true)
           if [ -n "$POD" ]; then
             python scripts/e2e/podctl.py logs "$POD" --tail 400
           else
-            echo "No pod named $POD_NAME - nothing to read."
+            echo "No pod was created - nothing to read."
           fi
 
       # By name, not by id. A cancelled job never gets here at all, but a
@@ -130,6 +130,15 @@ jobs:
           python scripts/e2e/podctl.py down --prefix "$POD_NAME" --yes || true
           python scripts/e2e/podctl.py ls
 
+      # Narrowed to this run's pod. Without the id, `cost` reports every
+      # pod billed today - which on a public repository publishes the day's
+      # spend across work that has nothing to do with this job.
       - name: What it cost
         if: always()
-        run: python scripts/e2e/podctl.py cost --last 1 --bucket day || true
+        run: |
+          POD=$(cat pod.id 2>/dev/null || true)
+          if [ -n "$POD" ]; then
+            python scripts/e2e/podctl.py cost "$POD" --last 1 --bucket day || true
+          else
+            echo "No pod was created, so nothing was spent on one."
+          fi

@@ -1,0 +1,1186 @@
+#!/usr/bin/env python3
+"""Create, inspect and destroy pods from the command line.
+
+The first piece of the end-to-end runner, and deliberately the smallest one:
+before anything can be automated, the three calls it rests on have to be known
+to work - read the catalogue, start a pod, stop it again.
+
+WHY THIS IS NOT IN THE IMAGE
+This drives RunPod from outside. It has no business inside a container that
+RunPod is running, and it never enters one: the Dockerfile copies named script
+files, not scripts/ as a directory.
+
+WHY THE STANDARD LIBRARY ONLY
+It has to run on a laptop, in a CI job and in a pod shell without anyone being
+asked to install something first. urllib is enough for six HTTP calls.
+
+WHY v2
+REST v1 and the GraphQL API are both announced as heading for deprecation. v2
+is in public beta and its own documentation says the endpoints may still move,
+so the spec version is checked on every run rather than discovered by a
+confusing 404 six months from now.
+
+Usage:
+    export RUNPOD_API_KEY=...
+
+    python scripts/e2e/podctl.py catalog --min-memory 32
+    python scripts/e2e/podctl.py up --gpu "NVIDIA GeForce RTX 5090" --dry-run
+    python scripts/e2e/podctl.py up --gpu "NVIDIA GeForce RTX 5090"
+    python scripts/e2e/podctl.py ls
+    python scripts/e2e/podctl.py logs <pod-id>
+    python scripts/e2e/podctl.py down <pod-id>
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+API = os.environ.get("RUNPOD_API_BASE", "https://api.runpod.io/v2")
+
+# The beta is expected to move within 2.x and not outside it. A mismatch is a
+# warning rather than a refusal: being unable to destroy a running pod because
+# a minor version moved would be worse than the drift it protects against.
+SPEC_MAJOR = "2"
+
+# urllib announces itself as "Python-urllib/3.x", and the edge in front of the
+# API rejects that signature with a Cloudflare 403 before RunPod ever sees the
+# request. It looks exactly like a permissions failure and it is not: the same
+# call succeeds with any other agent. Naming the tool also means a support
+# request can be traced to it.
+USER_AGENT = "podctl/1.0 (+https://github.com/unicorncomfyui/pod-comfyui-h3)"
+
+# DataCenterRegion, verbatim from the spec, plus ALL to opt out of filtering.
+REGIONS = ["ALL", "EUROPE", "NORTH_AMERICA", "SOUTH_AMERICA", "ASIA",
+           "MIDDLE_EAST", "AFRICA", "OCEANIA", "ANTARCTICA", "UNKNOWN"]
+
+IMAGE = os.environ.get("E2E_IMAGE", "vlop12ui/pod-comfyui-h3:cu130-develop")
+
+
+def log(msg: str = "") -> None:
+    print(msg, flush=True)
+
+
+def note(msg: str = "") -> None:
+    """Commentary, on stderr.
+
+    --dry-run exists to be piped somewhere - jq, a diff, a request builder -
+    and a status line interleaved with the JSON breaks that. Anything that is
+    not the payload goes to the other stream.
+    """
+    print(msg, file=sys.stderr, flush=True)
+
+
+def redact(obj):
+    """Blank every env value before a pod object is ever printed.
+
+    The API echoes back the environment it was given, so anything passed to a
+    pod comes home in the response - and on a public repository the CI log that
+    prints it is world-readable. HF_TOKEN is the concrete case: it is a
+    documented variable of this image, it would be handed to the pod as env,
+    and it would then appear in full in a log nobody thought of as an output.
+
+    GitHub masks the exact string of a registered secret, so a value that
+    arrives back verbatim would be caught - but only if it was registered as a
+    secret, only exactly, and not once JSON escaping has touched it. Not
+    printing it at all is the version that does not depend on any of that.
+    """
+    if isinstance(obj, dict):
+        return {k: ("***" if k == "env" and isinstance(v, dict)
+                    else redact(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact(v) for v in obj]
+    return obj
+
+
+def api(method: str, path: str, body: dict | None = None,
+        query: dict | None = None) -> dict | list:
+    url = f"{API}{path}"
+    if query:
+        # Comma-separated arrays, per the spec's style: form / explode false.
+        flat = {k: (",".join(v) if isinstance(v, list) else v)
+                for k, v in query.items() if v is not None}
+        url += "?" + urllib.parse.urlencode(flat)
+
+    key = os.environ.get("RUNPOD_API_KEY")
+    if not key:
+        raise SystemExit("[ERROR] RUNPOD_API_KEY is not set.")
+
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        # Stashed, because the body can only be read once and callers need it:
+        # whether a 400 is a bad request or a shortage is decided by its text.
+        e._body = detail  # noqa: SLF001
+        log(f"[ERROR] {method} {path} -> {e.code}")
+        # A 403 carrying Cloudflare's 1010 never reached RunPod, so it says
+        # nothing about the key. Left unexplained it sends you back to the
+        # permissions screen, which is the one place the answer is not.
+        if e.code == 403 and "1010" in detail:
+            log("        Blocked by the edge on the client signature, not by "
+                "RunPod.")
+            log("        This is not a permissions problem - the request never "
+                "arrived.")
+        else:
+            try:
+                log("        " + json.dumps(json.loads(detail))[:500])
+            except json.JSONDecodeError:
+                log("        " + detail[:500])
+        raise
+
+
+def check_spec() -> None:
+    """Read the served spec version once, so drift is announced not guessed."""
+    try:
+        req = urllib.request.Request(f"{API}/openapi.json",
+                                     headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            version = str(json.loads(r.read()).get("info", {}).get("version", ""))
+    except Exception:  # noqa: BLE001 - never let a check block a teardown
+        return
+    if version and not version.startswith(SPEC_MAJOR + "."):
+        log(f"[WARN] The API now serves spec {version}; this script was written "
+            f"against {SPEC_MAJOR}.x. Check the release notes before trusting "
+            f"anything below.")
+
+
+# ---------------------------------------------------------------------------
+def datacenter_index() -> dict:
+    """id -> data centre record.
+
+    Fetched separately because the GPU catalogue carries only an id and a stock
+    level per data centre. Everything needed to CHOOSE one lives here: its
+    continental region, and which network volume tiers it offers - the
+    high-performance tier is not everywhere, and a zone without it cannot host
+    the fast volume whatever its GPU stock says.
+
+    The GPU endpoint does have a countryCodes filter, but it takes ISO country
+    codes; asking for "Europe" through it would mean hard-coding a list of
+    countries that goes stale the day Runpod opens a zone in one more. The
+    region enum is theirs to maintain, so it is theirs that gets used.
+    """
+    body = api("GET", "/catalog/datacenters")
+    if isinstance(body, dict) and "dataCenters" in body:
+        rows = body["dataCenters"]
+    elif isinstance(body, list):
+        rows = body
+    else:
+        log("[WARN] Could not read the data centre catalogue; region filtering "
+            "and volume tiers are unavailable this run.")
+        return {}
+    return {d.get("id"): d for d in rows if d.get("id")}
+
+
+def cmd_datacenters(args) -> int:
+    index = datacenter_index()
+    rows = [d for d in index.values()
+            if args.region == "ALL" or d.get("region") == args.region]
+    rows.sort(key=lambda d: str(d.get("id")))
+    log(f"{'id':<12}{'region':<16}{'volumes':<28}{'global net':<12}name")
+    for d in rows:
+        tiers = ",".join(d.get("networkVolumeTypes") or []) or "-"
+        log(f"{str(d.get('id','')):<12}{str(d.get('region','')):<16}"
+            f"{tiers:<28}{'yes' if d.get('globalNetwork') else 'no':<12}"
+            f"{d.get('name','')}")
+    log(f"\n{len(rows)} data centre(s). HIGH_PERFORMANCE is the tier that "
+        f"claims 3x throughput; a zone without it cannot host one.")
+    return 0
+
+
+def cmd_catalog(args) -> int:
+    # Per the spec: `product` is an array and is REQUIRED with
+    # include=AVAILABILITY, `cloud` scopes the availability and lowest-price
+    # figures, and both are valid only alongside that include. `cloud` defaults
+    # to SECURE here to match what `up` actually creates - availability
+    # measured across a cloud you will not deploy into describes a pod you
+    # cannot get.
+    body = api("GET", "/catalog/gpus", query={
+        "include": ["AVAILABILITY"],
+        "product": ["POD"],
+        "cloud": args.cloud,
+        "minCudaVersion": args.min_cuda,
+    })
+
+    # Named key, and a loud failure if it is not there. Guessing at a list of
+    # plausible key names is how this printed "nothing matched" for a response
+    # that was full of GPUs: an empty result and a shape mismatch must not look
+    # the same, because one means "look elsewhere" and the other means
+    # "the reader is wrong".
+    if isinstance(body, dict) and "gpus" in body:
+        gpus = body["gpus"]
+    elif isinstance(body, list):
+        gpus = body
+    else:
+        log("[ERROR] Unexpected response shape - no 'gpus' key.")
+        log(f"        keys: {sorted(body) if isinstance(body, dict) else type(body).__name__}")
+        log("        The spec may have moved; check /v2/openapi.json.")
+        return 1
+
+    rows = [g for g in gpus
+            if (g.get("memory") or 0) >= args.min_memory
+            and (args.name.lower() in str(g.get("id", "")).lower()
+                 if args.name else True)]
+    rows.sort(key=lambda g: (g.get("price") or {}).get("secure") or 1e9)
+
+    if not rows:
+        log(f"(no GPU matched name~'{args.name}' with >={args.min_memory}G "
+            f"and CUDA >={args.min_cuda})")
+        return 0
+
+    # Always, not only when filtering: the volume tiers are wanted either way.
+    index = datacenter_index()
+
+    for g in rows:
+        price = g.get("price") or {}
+        rate = price.get("secure" if args.cloud == "SECURE" else "community")
+        log(f"{str(g.get('id','')):<34}{g.get('memory') or 0:>4}G"
+            f"   {args.cloud.lower()} {rate if rate is not None else '-'} $/h"
+            f"   overall {g.get('availability') or '?'}")
+
+        # Per-data-centre stock, which is the reason to ask for AVAILABILITY at
+        # all: choosing a zone is the decision this output informs, and the
+        # overall figure hides it. NONE is dropped - a zone with no stock is
+        # not a candidate. The volume tiers are pulled in alongside because the
+        # zone has to satisfy both constraints at once, and discovering the
+        # second one after committing to the first is how a volume ends up in
+        # the wrong place. A volume cannot be moved between zones.
+        live = []
+        for d in (g.get("dataCenters") or []):
+            if d.get("availability") == "NONE":
+                continue
+            if args.region != "ALL":
+                meta = index.get(d.get("id")) or {}
+                if meta.get("region") != args.region:
+                    continue
+            live.append(d)
+
+        if not live:
+            log(f"      (no {args.region.lower().replace('_', ' ')} data centre "
+                f"reporting stock right now)")
+            continue
+        for d in live:
+            meta = index.get(d.get("id"))
+            # "none" and "?" are different answers. networkVolumeTypes is a
+            # required field of a data centre record, so an empty list means
+            # this zone offers no network volumes at all - which disqualifies
+            # it for anything that has to persist. Only a zone missing from
+            # the catalogue is genuinely unknown.
+            if meta is None:
+                tiers = "?"
+            else:
+                tiers = ",".join(meta.get("networkVolumeTypes") or []) or "none"
+            log(f"      {str(d.get('id','')):<10} {str(d.get('availability')):<7}"
+                f" volumes: {tiers}")
+
+    log(f"\n{len(rows)} type(s), {args.cloud} cloud, region {args.region}. "
+        f"Availability is this moment, not a reservation.")
+    return 0
+
+
+def model_set_size(env: dict) -> tuple[float, str] | None:
+    """GB the requested model sets will occupy, from the repository manifest.
+
+    Read here rather than trusted to the pod, because the pod's own pre-flight
+    check runs after it has been created and started billing, and reports into
+    a log somebody then has to go and read. The manifest is right beside this
+    script; asking it costs nothing and turns "the disk filled up" into a
+    refusal that names the number.
+
+    Returns None whenever the answer would be a guess - an unreadable
+    manifest, an unknown set name. A wrong figure here would be worse than
+    none: it would refuse pods that are fine.
+    """
+    if str(env.get("DOWNLOAD_MODELS", "true")).lower() == "false":
+        return 0.0, "downloads disabled"
+
+    manifest = Path(__file__).resolve().parent.parent.parent / "models" / "manifest.json"
+    try:
+        sets = json.loads(manifest.read_text(encoding="utf-8"))["sets"]
+    except Exception:  # noqa: BLE001 - never block a deploy on bookkeeping
+        return None
+
+    names = env.get("MODEL_SETS")
+    if not names:
+        # Fall back to what the image itself ships, so the check describes the
+        # pod actually being created rather than a hypothetical one.
+        try:
+            dockerfile = manifest.parent.parent / "Dockerfile"
+            for line in dockerfile.read_text(encoding="utf-8").splitlines():
+                if "MODEL_SETS=" in line:
+                    names = line.split("MODEL_SETS=", 1)[1].strip().strip('"\\')
+                    break
+        except Exception:  # noqa: BLE001
+            return None
+    if not names or names in ("default", "all", "none"):
+        return None
+
+    # Deduplicated by source path, because the sets share files: every H3 set
+    # names the same text encoder and the same two VAEs, and they land in one
+    # place on disk. Counting them per set would inflate the floor by 21 GB
+    # and refuse pods that are perfectly sized.
+    files, seen = {}, []
+    for name in [n.strip() for n in names.split(",") if n.strip()]:
+        if name not in sets:
+            return None
+        seen.append(name)
+        for f in sets[name].get("files", []):
+            files[(f.get("repo"), f.get("path"))] = float(f.get("size_gb") or 0)
+    return sum(files.values()), f"{len(seen)} set(s), {len(files)} file(s)"
+
+
+def build_request(args) -> dict:
+    body: dict = {
+        "name": args.name,
+        "gpu": {"id": args.gpu, "count": args.count},
+        "env": {},
+    }
+
+    # A comparison, NOT the exact-match allowedCudaVersions. The spec is
+    # explicit that naming a version no machine reports yields a capacity
+    # error rather than a fallback, and this image only needs a floor: its own
+    # NVIDIA_REQUIRE_CUDA says cuda>=13.0. Note that sending either CUDA field
+    # replaces a template's constraint entirely - which is wanted, the floor
+    # belongs to the image and not to whoever last edited the template.
+    if args.min_cuda:
+        body["minCudaVersion"] = args.min_cuda
+
+    # With a template, silence is meaningful. The spec says explicit body
+    # fields override the template's, so sending argparse defaults would
+    # quietly replace the image, the disk, the ports and the mount that the
+    # template exists to carry. Only what was actually typed is sent; the
+    # built-in defaults apply solely when there is no template to defer to.
+    # `env` is the exception the spec carves out: it merges per key with body
+    # values winning, so passing --env adds to the template rather than
+    # replacing it.
+    if args.template:
+        body["templateId"] = args.template
+        if args.image:
+            body["image"] = args.image
+        if args.disk is not None:
+            body["disk"] = args.disk
+        if args.ports:
+            body["ports"] = args.ports
+    else:
+        body["image"] = args.image or IMAGE
+        body["disk"] = args.disk if args.disk is not None else 30
+        body["ports"] = args.ports or ["3000/http", "8080/http"]
+
+    if args.datacenter:
+        body["dataCenterIds"] = args.datacenter
+    if args.volume:
+        # Mount kind is fixed at create time and the volume must live in the
+        # same data centre as the pod - which is why --datacenter and --volume
+        # travel together or not at all.
+        body["mounts"] = {"network": [{"volumeId": args.volume,
+                                       "path": "/workspace"}]}
+    else:
+        # Host-local persistent storage: RunPod's "volume disk". Faster than a
+        # network volume and it needs no data centre pin, so the scheduler
+        # keeps the whole fleet to choose from - which matters when healthy
+        # hosts are the scarce thing. The trade is that it is pinned to one
+        # machine and dies with it, so the next pod re-downloads everything.
+        # Right for a smoke test, wrong for anything you cannot recreate.
+        size = args.workspace
+        if size is None and not args.template:
+            size = 100
+        if size is not None:
+            body["mounts"] = {"persistent": {"size": size, "path": "/workspace"}}
+    for pair in args.env:
+        k, _, v = pair.partition("=")
+        body["env"][k] = v
+    return body
+
+
+def cmd_up(args) -> int:
+    """Draw machines until one satisfies --min-ram, or the attempts run out.
+
+    Retrying is the only lever there is. RAM cannot be requested and cannot be
+    read before boot, so the shape of the machine is discovered by taking one -
+    and a rejected attempt costs a minute of a pod, not a run. Without the
+    loop, --min-ram is a way to fail rather than a way to get what you asked
+    for, and you end up typing `up` in a while loop by hand.
+    """
+    last = ""
+    for attempt in range(1, args.attempts + 1):
+        if args.attempts > 1:
+            log(f"\n=== attempt {attempt}/{args.attempts} ===")
+        rc = _up_once(args)
+        if rc not in ("retry", "capacity"):
+            return rc
+        last = rc
+        # Back off between capacity failures. Hammering an API that just told
+        # us it could not place a pod is how a transient shortage becomes a
+        # rate limit, and the wait costs nothing - no pod exists to bill.
+        if rc == "capacity" and attempt < args.attempts:
+            time.sleep(min(15 * attempt, 60))
+
+    # Two different failures, and conflating them sends you to the wrong
+    # screen. A machine drawn and refused is a sizing question; a machine
+    # never created is a capacity question, and no amount of --min-ram will
+    # change it.
+    log("")
+    if last == "capacity":
+        log(f"[ERROR] {args.attempts} attempt(s), no pod created. The API "
+            f"refused the placement, not the settings.")
+        log("        This endpoint places one exact GPU type and does not "
+            "search for capacity.")
+        log("        Widen the search - drop --datacenter, or pick a zone the "
+            "catalogue shows with stock:")
+        log(f"          python {sys.argv[0]} catalog --region ALL")
+    else:
+        log(f"[ERROR] {args.attempts} machine(s) drawn, none with "
+            f"{args.min_ram} GB. That size may not exist in these data "
+            f"centres - the console's RAM/GPU filter will tell you where it "
+            f"does.")
+    return 1
+
+
+def _up_once(args):
+    body = build_request(args)
+
+    # Disk pre-flight, before the pod exists. The image downloads its weights
+    # onto /workspace at first boot, and without a mount that is the 30 GB
+    # container disk - which the default model set overruns by more than
+    # twice. The failure that follows reads like a broken download rather than
+    # a pod that was never given room.
+    need = model_set_size(body.get("env") or {})
+    have = (body.get("mounts") or {}).get("persistent", {}).get("size")
+    if args.template and not {"MODEL_SETS", "DOWNLOAD_MODELS"} & set(body["env"]):
+        # The template carries its own env and its own mount, and neither is
+        # visible from here - the API resolves them at create time. Guessing
+        # would produce a confident wrong number, so the check says it is
+        # standing down rather than implying the sizing was verified.
+        note("Models     not checked - the template supplies MODEL_SETS and "
+             "the mount, and neither is readable from here.")
+    elif need is not None and have is not None:
+        weights, how = need
+        # Headroom for the Triton cache, outputs and the ComfyUI user
+        # directory - all of which live on the same mount.
+        floor = weights + 20
+        note(f"Models     {weights:.2f} GB ({how}); /workspace {have} GB")
+        if have < floor:
+            note(f"[ERROR] {have} GB will not hold {weights:.2f} GB of weights "
+                 f"plus room to work.")
+            note(f"        Use --workspace {int(floor + 0.5)} or more, or pass "
+                 f"--env DOWNLOAD_MODELS=false for a smoke test, or narrow "
+                 f"--env MODEL_SETS=...")
+            return 2
+    if args.dry_run:
+        # Redacted too. A dry run is the output most likely to be pasted into
+        # an issue or a chat to ask "does this look right", and the shape is
+        # what that question is about - the keys are still visible, only the
+        # values are not.
+        log(json.dumps(redact(body), indent=2))
+        return 0
+
+    # This endpoint places one specific GPU type: its own documentation says it
+    # does not search for capacity and does not fall back, and tells you to
+    # read the catalogue first. So read it - a placement that was never going
+    # to work should be named here rather than inferred from a 500 whose body
+    # says only "failed to create pod".
+    if args.gpu and not args.no_precheck:
+        try:
+            everywhere = gpu_availability(args.gpu)
+            here = {k: v for k, v in everywhere.items()
+                    if not args.datacenter or k in args.datacenter}
+            if here:
+                note("Stock      " + "   ".join(f"{k} {v}" for k, v in here.items()))
+            else:
+                note(f"[WARN] No stock for '{args.gpu}'"
+                     + (f" in {', '.join(args.datacenter)}" if args.datacenter else "")
+                     + " right now.")
+                # Naming where it IS turns a dead end into one edit. Without
+                # this the advice is "widen the search" and the reader has to
+                # go run the catalogue themselves to find out where.
+                elsewhere = {k: v for k, v in everywhere.items()
+                             if k not in (args.datacenter or [])}
+                if elsewhere:
+                    note("       It is available in: "
+                         + "   ".join(f"{k} {v}" for k, v in elsewhere.items()))
+                else:
+                    note("       And nowhere else either - this GPU type has no "
+                         "stock anywhere at the moment.")
+        except Exception:  # noqa: BLE001 - a hint must never block a deploy
+            pass
+
+    try:
+        pod = api("POST", "/pods", body=body)
+    except urllib.error.HTTPError as e:
+        # 500 is not in this endpoint's documented set (201/400/401/403/404/
+        # 422/429), and 429 is transient by definition. Neither says the
+        # request was wrong, so neither should end a run that was given more
+        # than one attempt - which is what happened: attempt 1 of 2 raised and
+        # the whole job stopped.
+        if e.code >= 500 or e.code == 429:
+            log(f"       Failed on the API's side ({e.code}). That spends this "
+                f"attempt, not the run.")
+            return "capacity"
+        # A 400 normally means the body was wrong and retrying is pointless.
+        # This one is the exception, and it says so itself: "There are no
+        # longer any instances available with the requested specifications.
+        # Please refresh and try again." Treating it like a validation error
+        # ended a three-attempt run on its first try.
+        if e.code == 400 and NO_CAPACITY.search(getattr(e, "_body", "") or ""):
+            log("       The zone ran out between the catalogue lookup and the "
+                "request. Attempt spent, run continues.")
+            return "capacity"
+        raise
+    pod_id = pod.get("id")
+    if not pod_id:
+        log("[ERROR] The API accepted the request but returned no pod id.")
+        log("        " + json.dumps(redact(pod))[:400])
+        return 1
+
+    # Written before anything else can fail. A caller that has the id can
+    # terminate the pod and can ask what it cost; a caller reduced to grepping
+    # this output has neither once the format shifts by a space.
+    if args.id_file:
+        try:
+            Path(args.id_file).write_text(pod_id + "\n", encoding="utf-8")
+        except OSError as exc:
+            log(f"[WARN] Could not write {args.id_file}: {exc}")
+
+    # Printed before the wait, and on its own line, because everything after
+    # this point can fail while the pod keeps billing. This id is how it gets
+    # stopped, so it must survive a scrollback nobody read to the end.
+    log(f"\n  pod {pod_id}")
+    log(f"  stop it with:  python {sys.argv[0]} down {pod_id}\n")
+
+    deadline = time.time() + args.timeout
+    last = ""
+    while time.time() < deadline:
+        state = api("GET", f"/pods/{pod_id}")
+        status = str(state.get("status") or "")
+        if status != last:
+            log(f"  {status}")
+            last = status
+        if status == "RUNNING":
+            log(f"\n[OK] Running after {int(time.time() - (deadline - args.timeout))} s.")
+            describe(state)
+            if not args.min_ram:
+                return 0
+            # The one check that cannot be a filter. Asked for after the fact,
+            # so a machine that is too small costs a boot rather than a run -
+            # which is the cheap end of a mistake that would otherwise surface
+            # as an offloader thrashing mid-generation.
+            gib = wait_for_ram(pod_id)
+            ram = gib_to_gb(gib) if gib is not None else None
+            if ram is None:
+                log("")
+                log("[WARN] The memory limit never appeared in the log, so the")
+                log("       machine could not be checked. The pod is LEFT")
+                log("       RUNNING and is billing:")
+                log(f"         python {sys.argv[0]} logs {pod_id} --follow")
+                log(f"         python {sys.argv[0]} down {pod_id}")
+                return 0
+            if ram >= args.min_ram:
+                log(f"[OK] {ram} GB of RAM ({gib} GiB as the cgroup reports "
+                    f"it), at or above the {args.min_ram} GB asked for.")
+                return 0
+            log(f"[ERROR] {ram} GB of RAM ({gib} GiB in the log), below the "
+                f"{args.min_ram} GB asked for. The API cannot request memory, "
+                f"so this is the only place it can be caught.")
+            if args.keep:
+                log("       Left running as asked.")
+                return 1
+            try:
+                api("DELETE", f"/pods/{pod_id}")
+                log("[OK] Terminated.")
+            except urllib.error.HTTPError:
+                log(f"[WARN] Could not terminate {pod_id}. STOP IT BY HAND.")
+            return "retry"
+        if status in ("ERROR", "EXITED", "TERMINATED"):
+            log(f"\n[ERROR] Pod reached {status} without running.")
+            break
+        time.sleep(5)
+    else:
+        log(f"\n[ERROR] Still {last or 'unknown'} after {args.timeout} s.")
+
+    # A pod that never became useful still costs money. Tear it down unless
+    # asked not to - the one case for keeping it is reading the logs of a
+    # container that failed to start, and that is what --keep is for.
+    if args.keep:
+        log(f"       Left running as asked. logs: python {sys.argv[0]} "
+            f"logs {pod_id}")
+        return 1
+    log("       Terminating it; pass --keep to inspect it instead.")
+    try:
+        api("DELETE", f"/pods/{pod_id}")
+        log("[OK] Terminated.")
+    except urllib.error.HTTPError:
+        log(f"[WARN] Could not terminate {pod_id}. STOP IT BY HAND.")
+    return 1
+
+
+def list_pods() -> list:
+    body = api("GET", "/pods")
+    if isinstance(body, dict):
+        return body.get("pods") or body.get("data") or []
+    return body or []
+
+
+def cmd_down(args) -> int:
+    """Terminate pods by id, or by name prefix.
+
+    Deliberately NOT an account-wide kill by default. This account carries
+    long-lived work alongside throwaway runs, and a tool that can empty it in
+    one keystroke is a tool that eventually will. --prefix scopes the sweep to
+    the names this script generates; --all is the blunt instrument and has to
+    be asked for twice.
+    """
+    if args.pod_id:
+        rc = 0
+        for pod_id in args.pod_id:
+            try:
+                api("DELETE", f"/pods/{pod_id}")
+                log(f"[OK] {pod_id} terminated.")
+            except urllib.error.HTTPError:
+                rc = 1
+        return rc
+
+    if not (args.prefix or args.all):
+        log("[ERROR] Give pod ids, or --prefix NAME, or --all.")
+        return 2
+
+    pods = list_pods()
+    doomed = [p for p in pods
+              if str(p.get("status")) not in ("TERMINATED", "EXITED")
+              and (args.all or str(p.get("name", "")).startswith(args.prefix))]
+    if not doomed:
+        log("Nothing matched. Nothing is being charged for by this rule.")
+        return 0
+
+    log("About to terminate:")
+    for p in doomed:
+        log(f"  {p.get('id'):<22}{str(p.get('status')):<13}"
+            f"{p.get('cost') or 0:>6} $/h   {p.get('name','')}")
+    total = sum(float(p.get("cost") or 0) for p in doomed)
+    log(f"\n{len(doomed)} pod(s), {total:.2f} $/h combined.")
+
+    if not args.yes:
+        log("Nothing done. Add --yes to go through with it.")
+        return 1
+
+    rc = 0
+    for p in doomed:
+        try:
+            api("DELETE", f"/pods/{p.get('id')}")
+            log(f"[OK] {p.get('id')} terminated.")
+        except urllib.error.HTTPError:
+            rc = 1
+    return rc
+
+
+def cmd_ls(args) -> int:
+    pods = list_pods()
+    if not pods:
+        log("No pods at all. Nothing is billing.")
+        return 0
+
+    log(f"{'id':<22}{'status':<13}{'$/h':>6}  {'zone':<10}{'gpu':<26}name")
+    burning = 0.0
+    for p in sorted(pods, key=lambda x: str(x.get("status"))):
+        gpu = (p.get("gpu") or {}).get("id") or ""
+        cost = float(p.get("cost") or 0)
+        burning += cost
+        log(f"{str(p.get('id','')):<22}{str(p.get('status','')):<13}"
+            f"{cost:>6.2f}  {str(p.get('dataCenterId') or '-'):<10}"
+            f"{str(gpu).replace('NVIDIA GeForce ', '')[:25]:<26}"
+            f"{p.get('name','')}")
+
+    # The number that matters is the one still running, and it is worth saying
+    # out loud: a pod forgotten after a failed check is the most expensive
+    # mistake this tool can leave behind, and it is invisible until the bill.
+    if burning > 0:
+        log(f"\n{len(pods)} pod(s), {burning:.2f} $/h right now "
+            f"= {burning * 24:.0f} $/day if left alone.")
+        log(f"Sweep the throwaway ones:  python {sys.argv[0]} down "
+            f"--prefix e2e- --yes")
+    else:
+        log(f"\n{len(pods)} pod(s), none billing.")
+    return 0
+
+
+def describe(pod: dict) -> None:
+    """Say what was actually created, not what was asked for.
+
+    A template is resolved server-side, so the request body says nothing about
+    the disk or the mount the pod ends up with - and a template that carries no
+    persistent mount produces a pod with only its container disk, silently. The
+    first sign of that is otherwise a download failing at 10 GB, an hour later,
+    with nothing on screen having suggested it.
+    """
+    mounts = pod.get("mounts") or {}
+    persistent = (mounts.get("persistent") or {}).get("size")
+    network = [m.get("volumeId") for m in (mounts.get("network") or [])]
+    disk = pod.get("disk")
+
+    log(f"  data centre  {pod.get('dataCenterId') or '?'}"
+        f"   cuda {pod.get('cudaVersion') or '?'}"
+        f"   {pod.get('cost') or 0} $/h")
+    if network:
+        log(f"  storage      network volume {', '.join(str(v) for v in network)}"
+            f"   + {disk} GB container disk")
+    elif persistent:
+        log(f"  storage      {persistent} GB at /workspace"
+            f"   + {disk} GB container disk")
+    else:
+        log(f"  storage      NO PERSISTENT MOUNT - {disk} GB container disk only")
+        # 40 GB is below the smallest useful model set, so at that point the
+        # download cannot succeed whatever else is configured.
+        if isinstance(disk, int) and disk < 40:
+            log("")
+            log("[WARN] Nothing is mounted at /workspace and the container disk")
+            log(f"       is {disk} GB. If this pod downloads models it will run")
+            log("       out of room. A template only supplies a mount if one was")
+            log("       saved into it - pass --workspace GB to attach one.")
+
+
+def stream_logs(pod_id: str, tail: int = 500, idle: int = 20,
+                deadline: float | None = None):
+    """Yield log lines from the pod's SSE stream.
+
+    This endpoint answers text/event-stream, not JSON: it backfills `tail`
+    lines and then stays open forever, streaming. Reading it like a document -
+    one urlopen().read() - blocks until the pod dies, which is why the earlier
+    version appeared to hang right after reporting the pod as running, and left
+    the pod billing while it waited.
+
+    So it is consumed as a stream, and stopped by silence: iterating raises a
+    timeout once `idle` seconds pass with nothing arriving, which for a
+    backfill means the history has been delivered. `deadline` bounds the whole
+    thing for callers that are waiting for one specific line to appear.
+    """
+    url = f"{API}/pods/{pod_id}/logs?tail={tail}"
+    key = os.environ.get("RUNPOD_API_KEY")
+    if not key:
+        raise SystemExit("[ERROR] RUNPOD_API_KEY is not set.")
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {key}",
+        "Accept": "text/event-stream",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=idle) as r:
+            for raw in r:
+                if deadline and time.time() > deadline:
+                    return
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue  # event:, id:, retry: and the blank separators
+                try:
+                    event = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                text = event.get("line")
+                if isinstance(text, str):
+                    yield text
+    except (TimeoutError, urllib.error.URLError, OSError):
+        # Silence on the socket is the normal end of a backfill, not a fault.
+        return
+
+
+# init.sh prints exactly one of these two lines, and prefers the cgroup because
+# /proc/meminfo inside a container reports the HOST's memory: a 92 GB pod on a
+# big machine announces 386 GB. The cgroup limit is the allocation.
+RAM_LINE = re.compile(
+    r"(?:memory limit read from cgroup|reporting host RAM):\s*(\d+)\s*GB")
+
+
+def gib_to_gb(gib: int) -> int:
+    """Restate a GiB figure in the decimal GB the machine was sold as.
+
+    init.sh divides the cgroup limit by 1024 three times and labels the result
+    "GB", so a pod Runpod advertises as 92 GB reports 86. Comparing a threshold
+    the operator typed - who is thinking of the console and the invoice -
+    against that number rejects machines that are exactly the right size, which
+    is what four wasted attempts in a row looked like.
+
+    bench.py already gets this right and says so in a comment; this is the same
+    correction applied where the decision is made.
+    """
+    return round(gib * 1024 ** 3 / 1e9)
+
+
+def wait_for_ram(pod_id: str, timeout: int = 180) -> int | None:
+    """Host RAM in GB, read out of the pod's own boot log.
+
+    There is no other way to get it. REST v2 has no memory or vCPU field on
+    CreatePodRequest for GPU pods and none on the Pod object either - RAM comes
+    bundled with whatever machine the scheduler picked, and the API neither
+    accepts a floor nor reports the result. The pod knows, because init.sh was
+    written to find out; asking it after the fact is the only route.
+    """
+    deadline = time.time() + timeout
+    log(f"  reading the pod's log for its memory limit "
+        f"(up to {timeout // 60} min, ^C to stop waiting)")
+
+    seen, tick = [], time.time()
+    # The endpoint's documented maximum, and it is wanted. The memory line is
+    # printed by init.sh at boot, while ComfyUI-Manager and the model fetcher
+    # go on to emit thousands more - so on a pod that has been up for a few
+    # minutes the line has already scrolled past a smaller backfill and would
+    # never be found. Observed live at line 1827 on a pod still starting.
+    for line in stream_logs(pod_id, tail=5000, idle=30, deadline=deadline):
+        seen.append(line)
+        m = RAM_LINE.search(line)
+        if m:
+            log(f"  {line.strip()[:100]}")
+            return int(m.group(1))
+        # A silent wait is indistinguishable from a hang, which is exactly how
+        # this looked. SSE servers send keep-alive frames, so the socket never
+        # goes quiet and the idle timeout never fires - the only honest signal
+        # that work is happening is to say how much log has gone by.
+        if time.time() - tick > 15:
+            log(f"  ... {len(seen)} line(s) so far, still looking")
+            tick = time.time()
+
+    # Nothing matched. The tail is worth more than the failure message: it says
+    # whether the container never started, died early, or simply has not
+    # reached init.sh yet.
+    if seen:
+        log("  last lines seen:")
+        for line in seen[-12:]:
+            log(f"    | {line.rstrip()[:110]}")
+    else:
+        log("  the pod produced no log at all in that window - RUNNING is the "
+            "allocation, not the container.")
+    return None
+
+
+def cmd_templates(args) -> int:
+    body = api("GET", "/catalog/templates" if args.public else "/templates")
+    rows = body.get("templates") if isinstance(body, dict) else body
+    if not rows:
+        log("No templates." + ("" if args.public else
+            " Save one from the console, or pass --public for the catalogue."))
+        return 0
+    log(f"{'id':<26}{'name':<34}image")
+    for t in rows:
+        log(f"{str(t.get('id','')):<26}{str(t.get('name',''))[:33]:<34}"
+            f"{t.get('image') or t.get('imageName') or ''}")
+    log(f"\n{len(rows)} template(s). A template is read ONCE at create time - "
+        f"the pod keeps no link to it, so later edits change nothing.")
+    return 0
+
+
+# The API reports a shortage as a 400 whose body asks you to try again:
+# "There are no longer any instances available with the requested
+# specifications. Please refresh and try again." A 400 normally means the
+# request was wrong and retrying is pointless - this one means the opposite,
+# so it is matched on rather than lumped in with real validation failures.
+NO_CAPACITY = re.compile(
+    r"(?i)no longer any instances|no instances available|"
+    r"instances available with the requested|insufficient capacity")
+
+
+def gpu_availability(gpu_id: str) -> dict:
+    """{zone: level} for one GPU type, every zone reporting stock right now."""
+    body = api("GET", "/catalog/gpus", query={
+        "include": ["AVAILABILITY"], "product": ["POD"], "cloud": "SECURE"})
+    rows = body.get("gpus") if isinstance(body, dict) else body
+    for g in rows or []:
+        if str(g.get("id")) != gpu_id:
+            continue
+        return {d.get("id"): d.get("availability")
+                for d in g.get("dataCenters") or []
+                if d.get("availability") != "NONE"}
+    return {}
+
+
+def cmd_action(args) -> int:
+    """start / stop / restart a pod.
+
+    `stop` is the one that matters here: it releases the GPU while KEEPING the
+    disk, so a pod that has already pulled 68 GB of weights can be parked and
+    woken up with them still in place. On host-local storage that is the only
+    way to avoid paying the download again, short of a network volume.
+
+    The bet it takes: a stopped pod has given its GPU back, and starting it
+    again needs one to be free on that same machine. In a zone reporting LOW
+    stock - which is what Europe reports for a 5090 - that is not a promise.
+    Park a pod you can afford to lose, or terminate and re-download.
+    """
+    pod = api("GET", f"/pods/{args.pod_id}")
+    allowed = pod.get("actions") or []
+    if allowed and args.action not in allowed:
+        log(f"[ERROR] '{args.action}' is not valid from {pod.get('status')}.")
+        log(f"        The pod publishes what it will accept: "
+            f"{', '.join(allowed) or 'nothing'}")
+        return 2
+
+    api("POST", f"/pods/{args.pod_id}/action", body={"action": args.action})
+    log(f"[OK] {args.action} sent to {args.pod_id}.")
+    if args.action == "stop":
+        log("     Compute released; the disk stays and keeps billing.")
+        log(f"     Wake it with: python {sys.argv[0]} start {args.pod_id}")
+        log("     A GPU has to be free on that machine for it to come back.")
+    return 0
+
+
+def cmd_cost(args) -> int:
+    """What was actually spent, per pod.
+
+    The hourly rate on a running pod says what it costs from now on; this says
+    what it has already cost. Those are different questions, and the second is
+    the one asked after finding a pod that ran all weekend.
+    """
+    query = {"lastN": args.last, "bucketSize": args.bucket}
+    if args.pod_id:
+        query["podId"] = args.pod_id
+    body = api("GET", "/billing/pods", query=query)
+    records = (body or {}).get("records") or []
+    if not records:
+        log("No billing records in that window.")
+        return 0
+
+    log(f"{'from':<22}{'pod':<18}{'gpu':>9}{'disk':>9}{'total':>10}")
+    for r in sorted(records, key=lambda x: str(x.get("startTime"))):
+        log(f"{str(r.get('startTime',''))[:19]:<22}"
+            f"{str(r.get('podId','')):<18}"
+            f"{r.get('gpuAmount') or 0:>9.2f}"
+            f"{r.get('diskAmount') or 0:>9.2f}"
+            f"{r.get('totalAmount') or 0:>10.2f}")
+
+    totals = ((body.get("metadata") or {}).get("totals") or {})
+    log(f"\n{len(records)} record(s) over {(body.get('metadata') or {}).get('uniquePodCount', '?')} "
+        f"pod(s): {totals.get('totalAmount') or 0:.2f} $ "
+        f"({totals.get('gpuAmount') or 0:.2f} compute, "
+        f"{totals.get('diskAmount') or 0:.2f} disk)")
+    return 0
+
+
+def cmd_show(args) -> int:
+    """One pod, by id.
+
+    Sharper than `ls` when something is missing: the listing is scoped to the
+    authenticated user, so a pod that answers here while being absent there
+    says the problem is whose list you are reading, not whether the pod
+    exists. A 404 says the opposite - it is genuinely gone.
+    """
+    try:
+        pod = api("GET", f"/pods/{args.pod_id}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            log(f"No pod {args.pod_id} under this key.")
+            log("  Either it was terminated - terminated pods disappear rather")
+            log("  than lingering in a state - or the pod belongs to another")
+            log("  account and this key cannot see it.")
+            return 1
+        raise
+
+    if args.json:
+        log(json.dumps(redact(pod), indent=2))
+        return 0
+
+    runtime = pod.get("runtime") or {}
+    uptime = runtime.get("uptime")
+    log(f"  id           {pod.get('id')}")
+    log(f"  name         {pod.get('name')}")
+    log(f"  status       {pod.get('status')}"
+        + (f"   up {uptime // 60} min" if isinstance(uptime, int) else ""))
+    log(f"  image        {pod.get('image')}")
+    describe(pod)
+
+    # Utilisation, when the pod is running. Not a size - the API reports these
+    # as percentages - but enough to tell a wedged container from a working one
+    # without opening a shell.
+    if runtime:
+        mem = (runtime.get("memory") or {}).get("util")
+        cpu = (runtime.get("cpu") or {}).get("util")
+        gpus = [g.get("gpuUtil") or g.get("util")
+                for g in (runtime.get("gpus") or [])]
+        parts = []
+        if cpu is not None:
+            parts.append(f"cpu {cpu}%")
+        if mem is not None:
+            parts.append(f"mem {mem}%")
+        if gpus:
+            parts.append("gpu " + "/".join(f"{g}%" for g in gpus if g is not None))
+        if parts:
+            log(f"  utilisation  {'   '.join(parts)}")
+    elif pod.get("status") == "RUNNING":
+        log("  utilisation  not reported yet - RUNNING is the allocation, the "
+            "container may still be starting")
+    return 0
+
+
+def cmd_logs(args) -> int:
+    n = 0
+    deadline = None if args.follow else time.time() + args.timeout
+    for line in stream_logs(args.pod_id, tail=args.tail,
+                            idle=args.timeout if args.follow else 15,
+                            deadline=deadline):
+        log(line)
+        n += 1
+    if n == 0:
+        log("(nothing yet - the container may not have started writing)")
+    elif not args.follow:
+        log(f"\n-- {n} line(s). The stream stays open; --follow to keep reading.")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    # The defaults are this project's target, not neutral ones: an RTX 5090 in
+    # Europe on the secure cloud. Widen with --name "" --region ALL when the
+    # question is what else exists.
+    c = sub.add_parser("catalog", help="GPU types, prices and availability")
+    c.add_argument("--min-memory", type=int, default=32, help="VRAM floor in GB")
+    c.add_argument("--min-cuda", default="13.0")
+    c.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"],
+                   help="which cloud the availability figures describe. "
+                        "SECURE matches what `up` creates by default")
+    c.add_argument("--region", default="EUROPE", choices=REGIONS,
+                   help="continental region, or ALL")
+    c.add_argument("--name", default="5090",
+                   help="substring filter on the GPU id; pass '' for every type")
+    c.set_defaults(func=cmd_catalog)
+
+    dc = sub.add_parser("datacenters",
+                        help="zones, their volume tiers and global networking")
+    dc.add_argument("--region", default="EUROPE", choices=REGIONS)
+    dc.set_defaults(func=cmd_datacenters)
+
+    u = sub.add_parser("up", help="create a pod and wait for it to run")
+    u.add_argument("--gpu", required=True, help="GPU type id, from `catalog`")
+    u.add_argument("--count", type=int, default=1)
+    u.add_argument("--template", metavar="ID",
+                   help="base the pod on a pod template (yours or a public "
+                        "catalog one). It supplies image, disk, ports, env "
+                        "and the mount; anything given here overrides it, "
+                        "except --env which merges. List them with "
+                        "`podctl templates`")
+    u.add_argument("--image", default=None,
+                   help=f"defaults to {IMAGE} when no --template is given")
+    u.add_argument("--name", default=f"e2e-{int(time.time())}")
+    u.add_argument("--disk", type=int, default=None,
+                   help="container disk in GB (default 30 without a template)")
+    u.add_argument("--ports", action="append", default=[],
+                   metavar="PORT/PROTO", help="repeatable, e.g. 3000/http")
+    u.add_argument("--min-cuda", default="13.0")
+    u.add_argument("--datacenter", action="append", default=[],
+                   help="pin placement; repeatable. Required with --volume")
+    u.add_argument("--volume", help="network volume id, same data centre")
+    # 100 GB, which is what the README has always told operators to give this
+    # image: the default model set is 68.27 GB and the rest is outputs, the
+    # Triton cache and the user directory. Not a round number picked for
+    # looks - the pre-flight above computes the real floor from the manifest.
+    u.add_argument("--workspace", type=int, default=None, metavar="GB",
+                   help="host-local persistent disk at /workspace, in GB "
+                        "(default 100 without a template; left to the "
+                        "template otherwise). No data centre pin needed, but "
+                        "it dies with the host. Ignored when --volume is given")
+    u.add_argument("--env", action="append", default=[], help="KEY=value")
+    u.add_argument("--min-ram", type=int, default=0, metavar="GB",
+                   help="reject the machine if it has less host RAM than this, in the decimal GB Runpod advertises - 92 means the 92 GB offer, not the 86 GiB its cgroup reports. Checked AFTER boot from the pod's own log: the API has no memory filter for GPU pods and does not report it either")
+    u.add_argument("--attempts", type=int, default=1, metavar="N",
+                   help="draw up to N machines until one meets --min-ram, terminating each that does not. Only useful with --min-ram")
+    u.add_argument("--id-file", metavar="PATH",
+                   help="write the created pod id here, before the wait "
+                        "starts - so a caller can still terminate it and "
+                        "ask what it cost after this command has died")
+    u.add_argument("--no-precheck", action="store_true",
+                   help="skip the catalogue lookup before creating")
+    u.add_argument("--timeout", type=int, default=600)
+    u.add_argument("--keep", action="store_true",
+                   help="do not terminate a pod that failed to start")
+    u.add_argument("--dry-run", action="store_true",
+                   help="print the request body and send nothing")
+    u.set_defaults(func=cmd_up)
+
+    d = sub.add_parser("down", help="terminate pods by id, prefix, or all")
+    d.add_argument("pod_id", nargs="*", help="one or more pod ids")
+    d.add_argument("--prefix", default="",
+                   help="terminate every live pod whose name starts with this "
+                        "- e2e- matches what `up` generates")
+    d.add_argument("--all", action="store_true",
+                   help="every live pod on the account, work included")
+    d.add_argument("--yes", action="store_true",
+                   help="required by --prefix and --all; without it they only "
+                        "show what they would do")
+    d.set_defaults(func=cmd_down)
+
+    sub.add_parser("ls", help="every pod on the account").set_defaults(func=cmd_ls)
+
+    tp = sub.add_parser("templates", help="your pod templates, and their ids")
+    tp.add_argument("--public", action="store_true",
+                    help="the public catalogue instead of your own")
+    tp.set_defaults(func=cmd_templates)
+
+    for act, helptext in [
+            ("stop", "release the GPU but keep the disk and its models"),
+            ("start", "wake a stopped pod, disk intact"),
+            ("restart", "restart the container in place")]:
+        a = sub.add_parser(act, help=helptext)
+        a.add_argument("pod_id")
+        a.set_defaults(func=cmd_action, action=act)
+
+    ct = sub.add_parser("cost", help="what pods have actually spent")
+    ct.add_argument("pod_id", nargs="?", help="one pod, or omit for all")
+    ct.add_argument("--last", type=int, default=7, metavar="N",
+                    help="most recent N buckets (default 7)")
+    ct.add_argument("--bucket", default="day", help="hour or day (default day)")
+    ct.set_defaults(func=cmd_cost)
+
+    sh = sub.add_parser("show", help="one pod by id - state, storage, load")
+    sh.add_argument("pod_id")
+    sh.add_argument("--json", action="store_true",
+                    help="the raw object, env redacted")
+    sh.set_defaults(func=cmd_show)
+
+    g = sub.add_parser("logs", help="container logs, without a shell")
+    g.add_argument("pod_id")
+    g.add_argument("--tail", type=int, default=500,
+                   help="historical lines to backfill (max 5000)")
+    g.add_argument("--follow", action="store_true",
+                   help="keep the stream open instead of stopping once the "
+                        "backfill has been delivered")
+    g.add_argument("--timeout", type=int, default=30,
+                   help="seconds of silence before giving up")
+    g.set_defaults(func=cmd_logs)
+
+    args = p.parse_args()
+    if args.cmd != "down":
+        check_spec()
+    if getattr(args, "volume", None) and not args.datacenter:
+        log("[ERROR] --volume needs --datacenter: a network volume only "
+            "attaches to a pod in its own data centre, and without the pin "
+            "the scheduler will place the pod somewhere it cannot mount.")
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except urllib.error.HTTPError:
+        # api() has already printed the status, the path and whatever the body
+        # explained. A traceback on top of that adds twenty lines of urllib
+        # internals and buries the one line that matters.
+        sys.exit(1)
+    except KeyboardInterrupt:
+        log("\n[WARN] Interrupted. If a pod was created, check `ls` - it is "
+            "still billing.")
+        sys.exit(130)
