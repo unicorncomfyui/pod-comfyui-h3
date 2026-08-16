@@ -598,11 +598,48 @@ def describe(pod: dict) -> None:
             log("       saved into it - pass --workspace GB to attach one.")
 
 
-def fetch_logs(pod_id: str) -> str:
-    out = api("GET", f"/pods/{pod_id}/logs")
-    if isinstance(out, dict):
-        out = out.get("logs") or out.get("data") or ""
-    return out if isinstance(out, str) else json.dumps(out)
+def stream_logs(pod_id: str, tail: int = 500, idle: int = 20,
+                deadline: float | None = None):
+    """Yield log lines from the pod's SSE stream.
+
+    This endpoint answers text/event-stream, not JSON: it backfills `tail`
+    lines and then stays open forever, streaming. Reading it like a document -
+    one urlopen().read() - blocks until the pod dies, which is why the earlier
+    version appeared to hang right after reporting the pod as running, and left
+    the pod billing while it waited.
+
+    So it is consumed as a stream, and stopped by silence: iterating raises a
+    timeout once `idle` seconds pass with nothing arriving, which for a
+    backfill means the history has been delivered. `deadline` bounds the whole
+    thing for callers that are waiting for one specific line to appear.
+    """
+    url = f"{API}/pods/{pod_id}/logs?tail={tail}"
+    key = os.environ.get("RUNPOD_API_KEY")
+    if not key:
+        raise SystemExit("[ERROR] RUNPOD_API_KEY is not set.")
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {key}",
+        "Accept": "text/event-stream",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=idle) as r:
+            for raw in r:
+                if deadline and time.time() > deadline:
+                    return
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue  # event:, id:, retry: and the blank separators
+                try:
+                    event = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                text = event.get("line")
+                if isinstance(text, str):
+                    yield text
+    except (TimeoutError, urllib.error.URLError, OSError):
+        # Silence on the socket is the normal end of a backfill, not a fault.
+        return
 
 
 # init.sh prints exactly one of these two lines, and prefers the cgroup because
@@ -622,11 +659,12 @@ def wait_for_ram(pod_id: str, timeout: int = 180) -> int | None:
     written to find out; asking it after the fact is the only route.
     """
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        m = RAM_LINE.search(fetch_logs(pod_id))
+    log(f"  reading the pod's log for its memory limit "
+        f"(up to {timeout // 60} min)...")
+    for line in stream_logs(pod_id, tail=1000, idle=30, deadline=deadline):
+        m = RAM_LINE.search(line)
         if m:
             return int(m.group(1))
-        time.sleep(5)
     return None
 
 
@@ -647,10 +685,17 @@ def cmd_templates(args) -> int:
 
 
 def cmd_logs(args) -> int:
-    out = api("GET", f"/pods/{args.pod_id}/logs")
-    if isinstance(out, dict):
-        out = out.get("logs") or out.get("data") or out
-    log(out if isinstance(out, str) else json.dumps(out, indent=2))
+    n = 0
+    deadline = None if args.follow else time.time() + args.timeout
+    for line in stream_logs(args.pod_id, tail=args.tail,
+                            idle=args.timeout if args.follow else 15,
+                            deadline=deadline):
+        log(line)
+        n += 1
+    if n == 0:
+        log("(nothing yet - the container may not have started writing)")
+    elif not args.follow:
+        log(f"\n-- {n} line(s). The stream stays open; --follow to keep reading.")
     return 0
 
 
@@ -734,6 +779,13 @@ def main() -> int:
 
     g = sub.add_parser("logs", help="container logs, without a shell")
     g.add_argument("pod_id")
+    g.add_argument("--tail", type=int, default=500,
+                   help="historical lines to backfill (max 5000)")
+    g.add_argument("--follow", action="store_true",
+                   help="keep the stream open instead of stopping once the "
+                        "backfill has been delivered")
+    g.add_argument("--timeout", type=int, default=30,
+                   help="seconds of silence before giving up")
     g.set_defaults(func=cmd_logs)
 
     args = p.parse_args()
