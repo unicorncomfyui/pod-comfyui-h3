@@ -406,6 +406,30 @@ def build_request(args) -> dict:
 
 
 def cmd_up(args) -> int:
+    """Draw machines until one satisfies --min-ram, or the attempts run out.
+
+    Retrying is the only lever there is. RAM cannot be requested and cannot be
+    read before boot, so the shape of the machine is discovered by taking one -
+    and a rejected attempt costs a minute of a pod, not a run. Without the
+    loop, --min-ram is a way to fail rather than a way to get what you asked
+    for, and you end up typing `up` in a while loop by hand.
+    """
+    for attempt in range(1, args.attempts + 1):
+        if args.attempts > 1:
+            log(f"\n=== attempt {attempt}/{args.attempts} ===")
+        rc = _up_once(args)
+        if rc != "retry":
+            return rc
+        if attempt == args.attempts:
+            log(f"\n[ERROR] {args.attempts} machine(s) drawn, none with "
+                f"{args.min_ram} GB. That size may not exist in these data "
+                f"centres - the console's RAM/GPU filter will tell you where "
+                f"it does.")
+            return 1
+    return 1
+
+
+def _up_once(args):
     body = build_request(args)
 
     # Disk pre-flight, before the pod exists. The image downloads its weights
@@ -488,13 +512,12 @@ def cmd_up(args) -> int:
             if args.keep:
                 log("       Left running as asked.")
                 return 1
-            log("       Terminating; run `up` again to draw another machine.")
             try:
                 api("DELETE", f"/pods/{pod_id}")
                 log("[OK] Terminated.")
             except urllib.error.HTTPError:
                 log(f"[WARN] Could not terminate {pod_id}. STOP IT BY HAND.")
-            return 1
+            return "retry"
         if status in ("ERROR", "EXITED", "TERMINATED"):
             log(f"\n[ERROR] Pod reached {status} without running.")
             break
@@ -689,6 +712,8 @@ def main() -> int:
     u.add_argument("--env", action="append", default=[], help="KEY=value")
     u.add_argument("--min-ram", type=int, default=0, metavar="GB",
                    help="reject the machine if it reports less host RAM than this. Checked AFTER boot from the pod's own log - the API has no memory filter for GPU pods and does not report it either")
+    u.add_argument("--attempts", type=int, default=1, metavar="N",
+                   help="draw up to N machines until one meets --min-ram, terminating each that does not. Only useful with --min-ram")
     u.add_argument("--timeout", type=int, default=600)
     u.add_argument("--keep", action="store_true",
                    help="do not terminate a pod that failed to start")
