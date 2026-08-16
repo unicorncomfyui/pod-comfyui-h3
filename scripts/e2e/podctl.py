@@ -546,25 +546,92 @@ def _up_once(args):
     return 1
 
 
+def list_pods() -> list:
+    body = api("GET", "/pods")
+    if isinstance(body, dict):
+        return body.get("pods") or body.get("data") or []
+    return body or []
+
+
 def cmd_down(args) -> int:
-    api("DELETE", f"/pods/{args.pod_id}")
-    log(f"[OK] {args.pod_id} terminated.")
-    return 0
+    """Terminate pods by id, or by name prefix.
+
+    Deliberately NOT an account-wide kill by default. This account carries
+    long-lived work alongside throwaway runs, and a tool that can empty it in
+    one keystroke is a tool that eventually will. --prefix scopes the sweep to
+    the names this script generates; --all is the blunt instrument and has to
+    be asked for twice.
+    """
+    if args.pod_id:
+        rc = 0
+        for pod_id in args.pod_id:
+            try:
+                api("DELETE", f"/pods/{pod_id}")
+                log(f"[OK] {pod_id} terminated.")
+            except urllib.error.HTTPError:
+                rc = 1
+        return rc
+
+    if not (args.prefix or args.all):
+        log("[ERROR] Give pod ids, or --prefix NAME, or --all.")
+        return 2
+
+    pods = list_pods()
+    doomed = [p for p in pods
+              if str(p.get("status")) not in ("TERMINATED", "EXITED")
+              and (args.all or str(p.get("name", "")).startswith(args.prefix))]
+    if not doomed:
+        log("Nothing matched. Nothing is being charged for by this rule.")
+        return 0
+
+    log("About to terminate:")
+    for p in doomed:
+        log(f"  {p.get('id'):<22}{str(p.get('status')):<13}"
+            f"{p.get('cost') or 0:>6} $/h   {p.get('name','')}")
+    total = sum(float(p.get("cost") or 0) for p in doomed)
+    log(f"\n{len(doomed)} pod(s), {total:.2f} $/h combined.")
+
+    if not args.yes:
+        log("Nothing done. Add --yes to go through with it.")
+        return 1
+
+    rc = 0
+    for p in doomed:
+        try:
+            api("DELETE", f"/pods/{p.get('id')}")
+            log(f"[OK] {p.get('id')} terminated.")
+        except urllib.error.HTTPError:
+            rc = 1
+    return rc
 
 
 def cmd_ls(args) -> int:
-    pods = api("GET", "/pods")
-    if isinstance(pods, dict):
-        pods = pods.get("pods") or pods.get("data") or []
+    pods = list_pods()
     if not pods:
-        log("No pods. Nothing is billing.")
+        log("No pods at all. Nothing is billing.")
         return 0
-    log(f"{'id':<22}{'status':<14}{'gpu':<30}name")
-    for p in pods:
+
+    log(f"{'id':<22}{'status':<13}{'$/h':>6}  {'zone':<10}{'gpu':<26}name")
+    burning = 0.0
+    for p in sorted(pods, key=lambda x: str(x.get("status"))):
         gpu = (p.get("gpu") or {}).get("id") or ""
-        log(f"{str(p.get('id','')):<22}{str(p.get('status','')):<14}"
-            f"{str(gpu)[:29]:<30}{p.get('name','')}")
-    log(f"\n{len(pods)} pod(s). Anything RUNNING here is being charged for.")
+        cost = float(p.get("cost") or 0)
+        burning += cost
+        log(f"{str(p.get('id','')):<22}{str(p.get('status','')):<13}"
+            f"{cost:>6.2f}  {str(p.get('dataCenterId') or '-'):<10}"
+            f"{str(gpu).replace('NVIDIA GeForce ', '')[:25]:<26}"
+            f"{p.get('name','')}")
+
+    # The number that matters is the one still running, and it is worth saying
+    # out loud: a pod forgotten after a failed check is the most expensive
+    # mistake this tool can leave behind, and it is invisible until the bill.
+    if burning > 0:
+        log(f"\n{len(pods)} pod(s), {burning:.2f} $/h right now "
+            f"= {burning * 24:.0f} $/day if left alone.")
+        log(f"Sweep the throwaway ones:  python {sys.argv[0]} down "
+            f"--prefix e2e- --yes")
+    else:
+        log(f"\n{len(pods)} pod(s), none billing.")
     return 0
 
 
@@ -808,8 +875,16 @@ def main() -> int:
                    help="print the request body and send nothing")
     u.set_defaults(func=cmd_up)
 
-    d = sub.add_parser("down", help="terminate a pod")
-    d.add_argument("pod_id")
+    d = sub.add_parser("down", help="terminate pods by id, prefix, or all")
+    d.add_argument("pod_id", nargs="*", help="one or more pod ids")
+    d.add_argument("--prefix", default="",
+                   help="terminate every live pod whose name starts with this "
+                        "- e2e- matches what `up` generates")
+    d.add_argument("--all", action="store_true",
+                   help="every live pod on the account, work included")
+    d.add_argument("--yes", action="store_true",
+                   help="required by --prefix and --all; without it they only "
+                        "show what they would do")
     d.set_defaults(func=cmd_down)
 
     sub.add_parser("ls", help="every pod on the account").set_defaults(func=cmd_ls)
