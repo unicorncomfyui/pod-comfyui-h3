@@ -41,6 +41,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 API = os.environ.get("RUNPOD_API_BASE", "https://api.runpod.io/v2")
 
@@ -65,6 +66,16 @@ IMAGE = os.environ.get("E2E_IMAGE", "vlop12ui/pod-comfyui-h3:cu130-develop")
 
 def log(msg: str = "") -> None:
     print(msg, flush=True)
+
+
+def note(msg: str = "") -> None:
+    """Commentary, on stderr.
+
+    --dry-run exists to be piped somewhere - jq, a diff, a request builder -
+    and a status line interleaved with the JSON breaks that. Anything that is
+    not the payload goes to the other stream.
+    """
+    print(msg, file=sys.stderr, flush=True)
 
 
 def redact(obj):
@@ -271,20 +282,94 @@ def cmd_catalog(args) -> int:
     return 0
 
 
+def model_set_size(env: dict) -> tuple[float, str] | None:
+    """GB the requested model sets will occupy, from the repository manifest.
+
+    Read here rather than trusted to the pod, because the pod's own pre-flight
+    check runs after it has been created and started billing, and reports into
+    a log somebody then has to go and read. The manifest is right beside this
+    script; asking it costs nothing and turns "the disk filled up" into a
+    refusal that names the number.
+
+    Returns None whenever the answer would be a guess - an unreadable
+    manifest, an unknown set name. A wrong figure here would be worse than
+    none: it would refuse pods that are fine.
+    """
+    if str(env.get("DOWNLOAD_MODELS", "true")).lower() == "false":
+        return 0.0, "downloads disabled"
+
+    manifest = Path(__file__).resolve().parent.parent.parent / "models" / "manifest.json"
+    try:
+        sets = json.loads(manifest.read_text(encoding="utf-8"))["sets"]
+    except Exception:  # noqa: BLE001 - never block a deploy on bookkeeping
+        return None
+
+    names = env.get("MODEL_SETS")
+    if not names:
+        # Fall back to what the image itself ships, so the check describes the
+        # pod actually being created rather than a hypothetical one.
+        try:
+            dockerfile = manifest.parent.parent / "Dockerfile"
+            for line in dockerfile.read_text(encoding="utf-8").splitlines():
+                if "MODEL_SETS=" in line:
+                    names = line.split("MODEL_SETS=", 1)[1].strip().strip('"\\')
+                    break
+        except Exception:  # noqa: BLE001
+            return None
+    if not names or names in ("default", "all", "none"):
+        return None
+
+    # Deduplicated by source path, because the sets share files: every H3 set
+    # names the same text encoder and the same two VAEs, and they land in one
+    # place on disk. Counting them per set would inflate the floor by 21 GB
+    # and refuse pods that are perfectly sized.
+    files, seen = {}, []
+    for name in [n.strip() for n in names.split(",") if n.strip()]:
+        if name not in sets:
+            return None
+        seen.append(name)
+        for f in sets[name].get("files", []):
+            files[(f.get("repo"), f.get("path"))] = float(f.get("size_gb") or 0)
+    return sum(files.values()), f"{len(seen)} set(s), {len(files)} file(s)"
+
+
 def build_request(args) -> dict:
     body: dict = {
         "name": args.name,
-        "image": args.image,
         "gpu": {"id": args.gpu, "count": args.count},
-        "disk": args.disk,
-        # A comparison, NOT the exact-match allowedCudaVersions. The spec is
-        # explicit that naming a version no machine reports yields a capacity
-        # error rather than a fallback, and this image only needs a floor:
-        # its own NVIDIA_REQUIRE_CUDA says cuda>=13.0.
-        "minCudaVersion": args.min_cuda,
-        "ports": ["3000/http", "8080/http"],
         "env": {},
     }
+
+    # A comparison, NOT the exact-match allowedCudaVersions. The spec is
+    # explicit that naming a version no machine reports yields a capacity
+    # error rather than a fallback, and this image only needs a floor: its own
+    # NVIDIA_REQUIRE_CUDA says cuda>=13.0. Note that sending either CUDA field
+    # replaces a template's constraint entirely - which is wanted, the floor
+    # belongs to the image and not to whoever last edited the template.
+    if args.min_cuda:
+        body["minCudaVersion"] = args.min_cuda
+
+    # With a template, silence is meaningful. The spec says explicit body
+    # fields override the template's, so sending argparse defaults would
+    # quietly replace the image, the disk, the ports and the mount that the
+    # template exists to carry. Only what was actually typed is sent; the
+    # built-in defaults apply solely when there is no template to defer to.
+    # `env` is the exception the spec carves out: it merges per key with body
+    # values winning, so passing --env adds to the template rather than
+    # replacing it.
+    if args.template:
+        body["templateId"] = args.template
+        if args.image:
+            body["image"] = args.image
+        if args.disk is not None:
+            body["disk"] = args.disk
+        if args.ports:
+            body["ports"] = args.ports
+    else:
+        body["image"] = args.image or IMAGE
+        body["disk"] = args.disk if args.disk is not None else 30
+        body["ports"] = args.ports or ["3000/http", "8080/http"]
+
     if args.datacenter:
         body["dataCenterIds"] = args.datacenter
     if args.volume:
@@ -293,15 +378,18 @@ def build_request(args) -> dict:
         # travel together or not at all.
         body["mounts"] = {"network": [{"volumeId": args.volume,
                                        "path": "/workspace"}]}
-    elif args.workspace:
+    else:
         # Host-local persistent storage: RunPod's "volume disk". Faster than a
         # network volume and it needs no data centre pin, so the scheduler
         # keeps the whole fleet to choose from - which matters when healthy
         # hosts are the scarce thing. The trade is that it is pinned to one
         # machine and dies with it, so the next pod re-downloads everything.
         # Right for a smoke test, wrong for anything you cannot recreate.
-        body["mounts"] = {"persistent": {"size": args.workspace,
-                                         "path": "/workspace"}}
+        size = args.workspace
+        if size is None and not args.template:
+            size = 100
+        if size is not None:
+            body["mounts"] = {"persistent": {"size": size, "path": "/workspace"}}
     for pair in args.env:
         k, _, v = pair.partition("=")
         body["env"][k] = v
@@ -310,6 +398,34 @@ def build_request(args) -> dict:
 
 def cmd_up(args) -> int:
     body = build_request(args)
+
+    # Disk pre-flight, before the pod exists. The image downloads its weights
+    # onto /workspace at first boot, and without a mount that is the 30 GB
+    # container disk - which the default model set overruns by more than
+    # twice. The failure that follows reads like a broken download rather than
+    # a pod that was never given room.
+    need = model_set_size(body.get("env") or {})
+    have = (body.get("mounts") or {}).get("persistent", {}).get("size")
+    if args.template and not {"MODEL_SETS", "DOWNLOAD_MODELS"} & set(body["env"]):
+        # The template carries its own env and its own mount, and neither is
+        # visible from here - the API resolves them at create time. Guessing
+        # would produce a confident wrong number, so the check says it is
+        # standing down rather than implying the sizing was verified.
+        note("Models     not checked - the template supplies MODEL_SETS and "
+             "the mount, and neither is readable from here.")
+    elif need is not None and have is not None:
+        weights, how = need
+        # Headroom for the Triton cache, outputs and the ComfyUI user
+        # directory - all of which live on the same mount.
+        floor = weights + 20
+        note(f"Models     {weights:.2f} GB ({how}); /workspace {have} GB")
+        if have < floor:
+            note(f"[ERROR] {have} GB will not hold {weights:.2f} GB of weights "
+                 f"plus room to work.")
+            note(f"        Use --workspace {int(floor + 0.5)} or more, or pass "
+                 f"--env DOWNLOAD_MODELS=false for a smoke test, or narrow "
+                 f"--env MODEL_SETS=...")
+            return 2
     if args.dry_run:
         # Redacted too. A dry run is the output most likely to be pasted into
         # an issue or a chat to ask "does this look right", and the shape is
@@ -387,6 +503,22 @@ def cmd_ls(args) -> int:
     return 0
 
 
+def cmd_templates(args) -> int:
+    body = api("GET", "/catalog/templates" if args.public else "/templates")
+    rows = body.get("templates") if isinstance(body, dict) else body
+    if not rows:
+        log("No templates." + ("" if args.public else
+            " Save one from the console, or pass --public for the catalogue."))
+        return 0
+    log(f"{'id':<26}{'name':<34}image")
+    for t in rows:
+        log(f"{str(t.get('id','')):<26}{str(t.get('name',''))[:33]:<34}"
+            f"{t.get('image') or t.get('imageName') or ''}")
+    log(f"\n{len(rows)} template(s). A template is read ONCE at create time - "
+        f"the pod keeps no link to it, so later edits change nothing.")
+    return 0
+
+
 def cmd_logs(args) -> int:
     out = api("GET", f"/pods/{args.pod_id}/logs")
     if isinstance(out, dict):
@@ -424,17 +556,32 @@ def main() -> int:
     u = sub.add_parser("up", help="create a pod and wait for it to run")
     u.add_argument("--gpu", required=True, help="GPU type id, from `catalog`")
     u.add_argument("--count", type=int, default=1)
-    u.add_argument("--image", default=IMAGE)
+    u.add_argument("--template", metavar="ID",
+                   help="base the pod on a pod template (yours or a public "
+                        "catalog one). It supplies image, disk, ports, env "
+                        "and the mount; anything given here overrides it, "
+                        "except --env which merges. List them with "
+                        "`podctl templates`")
+    u.add_argument("--image", default=None,
+                   help=f"defaults to {IMAGE} when no --template is given")
     u.add_argument("--name", default=f"e2e-{int(time.time())}")
-    u.add_argument("--disk", type=int, default=30, help="container disk, GB")
+    u.add_argument("--disk", type=int, default=None,
+                   help="container disk in GB (default 30 without a template)")
+    u.add_argument("--ports", action="append", default=[],
+                   metavar="PORT/PROTO", help="repeatable, e.g. 3000/http")
     u.add_argument("--min-cuda", default="13.0")
     u.add_argument("--datacenter", action="append", default=[],
                    help="pin placement; repeatable. Required with --volume")
     u.add_argument("--volume", help="network volume id, same data centre")
-    u.add_argument("--workspace", type=int, metavar="GB",
-                   help="host-local persistent disk at /workspace, in GB. "
-                        "No data centre pin needed, but it dies with the "
-                        "host. Ignored when --volume is given")
+    # 100 GB, which is what the README has always told operators to give this
+    # image: the default model set is 68.27 GB and the rest is outputs, the
+    # Triton cache and the user directory. Not a round number picked for
+    # looks - the pre-flight above computes the real floor from the manifest.
+    u.add_argument("--workspace", type=int, default=None, metavar="GB",
+                   help="host-local persistent disk at /workspace, in GB "
+                        "(default 100 without a template; left to the "
+                        "template otherwise). No data centre pin needed, but "
+                        "it dies with the host. Ignored when --volume is given")
     u.add_argument("--env", action="append", default=[], help="KEY=value")
     u.add_argument("--timeout", type=int, default=600)
     u.add_argument("--keep", action="store_true",
@@ -448,6 +595,11 @@ def main() -> int:
     d.set_defaults(func=cmd_down)
 
     sub.add_parser("ls", help="every pod on the account").set_defaults(func=cmd_ls)
+
+    tp = sub.add_parser("templates", help="your pod templates, and their ids")
+    tp.add_argument("--public", action="store_true",
+                    help="the public catalogue instead of your own")
+    tp.set_defaults(func=cmd_templates)
 
     g = sub.add_parser("logs", help="container logs, without a shell")
     g.add_argument("pod_id")
