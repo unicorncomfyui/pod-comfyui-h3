@@ -56,6 +56,10 @@ SPEC_MAJOR = "2"
 # request can be traced to it.
 USER_AGENT = "podctl/1.0 (+https://github.com/unicorncomfyui/pod-comfyui-h3)"
 
+# DataCenterRegion, verbatim from the spec, plus ALL to opt out of filtering.
+REGIONS = ["ALL", "EUROPE", "NORTH_AMERICA", "SOUTH_AMERICA", "ASIA",
+           "MIDDLE_EAST", "AFRICA", "OCEANIA", "ANTARCTICA", "UNKNOWN"]
+
 IMAGE = os.environ.get("E2E_IMAGE", "vlop12ui/pod-comfyui-h3:cu130-develop")
 
 
@@ -143,6 +147,48 @@ def check_spec() -> None:
 
 
 # ---------------------------------------------------------------------------
+def datacenter_index() -> dict:
+    """id -> data centre record.
+
+    Fetched separately because the GPU catalogue carries only an id and a stock
+    level per data centre. Everything needed to CHOOSE one lives here: its
+    continental region, and which network volume tiers it offers - the
+    high-performance tier is not everywhere, and a zone without it cannot host
+    the fast volume whatever its GPU stock says.
+
+    The GPU endpoint does have a countryCodes filter, but it takes ISO country
+    codes; asking for "Europe" through it would mean hard-coding a list of
+    countries that goes stale the day Runpod opens a zone in one more. The
+    region enum is theirs to maintain, so it is theirs that gets used.
+    """
+    body = api("GET", "/catalog/datacenters")
+    if isinstance(body, dict) and "dataCenters" in body:
+        rows = body["dataCenters"]
+    elif isinstance(body, list):
+        rows = body
+    else:
+        log("[WARN] Could not read the data centre catalogue; region filtering "
+            "and volume tiers are unavailable this run.")
+        return {}
+    return {d.get("id"): d for d in rows if d.get("id")}
+
+
+def cmd_datacenters(args) -> int:
+    index = datacenter_index()
+    rows = [d for d in index.values()
+            if args.region == "ALL" or d.get("region") == args.region]
+    rows.sort(key=lambda d: str(d.get("id")))
+    log(f"{'id':<12}{'region':<16}{'volumes':<28}{'global net':<12}name")
+    for d in rows:
+        tiers = ",".join(d.get("networkVolumeTypes") or []) or "-"
+        log(f"{str(d.get('id','')):<12}{str(d.get('region','')):<16}"
+            f"{tiers:<28}{'yes' if d.get('globalNetwork') else 'no':<12}"
+            f"{d.get('name','')}")
+    log(f"\n{len(rows)} data centre(s). HIGH_PERFORMANCE is the tier that "
+        f"claims 3x throughput; a zone without it cannot host one.")
+    return 0
+
+
 def cmd_catalog(args) -> int:
     # Per the spec: `product` is an array and is REQUIRED with
     # include=AVAILABILITY, `cloud` scopes the availability and lowest-price
@@ -179,31 +225,49 @@ def cmd_catalog(args) -> int:
     rows.sort(key=lambda g: (g.get("price") or {}).get("secure") or 1e9)
 
     if not rows:
-        log("(nothing matched - loosen --min-memory or --min-cuda)")
+        log(f"(no GPU matched name~'{args.name}' with >={args.min_memory}G "
+            f"and CUDA >={args.min_cuda})")
         return 0
+
+    # Always, not only when filtering: the volume tiers are wanted either way.
+    index = datacenter_index()
 
     for g in rows:
         price = g.get("price") or {}
-        secure = price.get("secure")
-        community = price.get("community")
+        rate = price.get("secure" if args.cloud == "SECURE" else "community")
         log(f"{str(g.get('id','')):<34}{g.get('memory') or 0:>4}G"
-            f"   secure {secure if secure is not None else '-':>6}"
-            f"   community {community if community is not None else '-':>6}"
-            f"   {g.get('availability') or '?'}")
-        # Per-data-centre stock, and the reason to ask for AVAILABILITY at all:
-        # choosing a zone is the decision this output exists to inform, and the
-        # overall figure hides it. NONE entries are dropped - a data centre
-        # with no stock is not a candidate.
-        live = [d for d in (g.get("dataCenters") or [])
-                if d.get("availability") != "NONE"]
-        if live:
-            log("      " + "   ".join(
-                f"{d.get('id')} {d.get('availability')}" for d in live))
-        else:
-            log("      (no data centre reporting stock right now)")
+            f"   {args.cloud.lower()} {rate if rate is not None else '-'} $/h"
+            f"   overall {g.get('availability') or '?'}")
 
-    log(f"\n{len(rows)} type(s). Availability is this moment, not a "
-        f"reservation - HIGH now can be NONE in an hour.")
+        # Per-data-centre stock, which is the reason to ask for AVAILABILITY at
+        # all: choosing a zone is the decision this output informs, and the
+        # overall figure hides it. NONE is dropped - a zone with no stock is
+        # not a candidate. The volume tiers are pulled in alongside because the
+        # zone has to satisfy both constraints at once, and discovering the
+        # second one after committing to the first is how a volume ends up in
+        # the wrong place. A volume cannot be moved between zones.
+        live = []
+        for d in (g.get("dataCenters") or []):
+            if d.get("availability") == "NONE":
+                continue
+            if args.region != "ALL":
+                meta = index.get(d.get("id")) or {}
+                if meta.get("region") != args.region:
+                    continue
+            live.append(d)
+
+        if not live:
+            log(f"      (no {args.region.lower().replace('_', ' ')} data centre "
+                f"reporting stock right now)")
+            continue
+        for d in live:
+            meta = index.get(d.get("id")) or {}
+            tiers = ",".join(meta.get("networkVolumeTypes") or []) or "?"
+            log(f"      {str(d.get('id','')):<10} {str(d.get('availability')):<7}"
+                f" volumes: {tiers}")
+
+    log(f"\n{len(rows)} type(s), {args.cloud} cloud, region {args.region}. "
+        f"Availability is this moment, not a reservation.")
     return 0
 
 
@@ -337,14 +401,25 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    # The defaults are this project's target, not neutral ones: an RTX 5090 in
+    # Europe on the secure cloud. Widen with --name "" --region ALL when the
+    # question is what else exists.
     c = sub.add_parser("catalog", help="GPU types, prices and availability")
-    c.add_argument("--min-memory", type=int, default=0, help="VRAM floor in GB")
+    c.add_argument("--min-memory", type=int, default=32, help="VRAM floor in GB")
     c.add_argument("--min-cuda", default="13.0")
     c.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"],
                    help="which cloud the availability figures describe. "
                         "SECURE matches what `up` creates by default")
-    c.add_argument("--name", default="", help="substring filter on the id")
+    c.add_argument("--region", default="EUROPE", choices=REGIONS,
+                   help="continental region, or ALL")
+    c.add_argument("--name", default="5090",
+                   help="substring filter on the GPU id; pass '' for every type")
     c.set_defaults(func=cmd_catalog)
+
+    dc = sub.add_parser("datacenters",
+                        help="zones, their volume tiers and global networking")
+    dc.add_argument("--region", default="EUROPE", choices=REGIONS)
+    dc.set_defaults(func=cmd_datacenters)
 
     u = sub.add_parser("up", help="create a pod and wait for it to run")
     u.add_argument("--gpu", required=True, help="GPU type id, from `catalog`")
