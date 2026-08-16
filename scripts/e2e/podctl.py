@@ -56,6 +56,28 @@ def log(msg: str = "") -> None:
     print(msg, flush=True)
 
 
+def redact(obj):
+    """Blank every env value before a pod object is ever printed.
+
+    The API echoes back the environment it was given, so anything passed to a
+    pod comes home in the response - and on a public repository the CI log that
+    prints it is world-readable. HF_TOKEN is the concrete case: it is a
+    documented variable of this image, it would be handed to the pod as env,
+    and it would then appear in full in a log nobody thought of as an output.
+
+    GitHub masks the exact string of a registered secret, so a value that
+    arrives back verbatim would be caught - but only if it was registered as a
+    secret, only exactly, and not once JSON escaping has touched it. Not
+    printing it at all is the version that does not depend on any of that.
+    """
+    if isinstance(obj, dict):
+        return {k: ("***" if k == "env" and isinstance(v, dict)
+                    else redact(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact(v) for v in obj]
+    return obj
+
+
 def api(method: str, path: str, body: dict | None = None,
         query: dict | None = None) -> dict | list:
     url = f"{API}{path}"
@@ -179,14 +201,18 @@ def build_request(args) -> dict:
 def cmd_up(args) -> int:
     body = build_request(args)
     if args.dry_run:
-        log(json.dumps(body, indent=2))
+        # Redacted too. A dry run is the output most likely to be pasted into
+        # an issue or a chat to ask "does this look right", and the shape is
+        # what that question is about - the keys are still visible, only the
+        # values are not.
+        log(json.dumps(redact(body), indent=2))
         return 0
 
     pod = api("POST", "/pods", body=body)
     pod_id = pod.get("id")
     if not pod_id:
         log("[ERROR] The API accepted the request but returned no pod id.")
-        log("        " + json.dumps(pod)[:400])
+        log("        " + json.dumps(redact(pod))[:400])
         return 1
 
     # Printed before the wait, and on its own line, because everything after
