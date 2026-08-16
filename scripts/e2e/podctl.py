@@ -144,13 +144,33 @@ def check_spec() -> None:
 
 # ---------------------------------------------------------------------------
 def cmd_catalog(args) -> int:
-    gpus = api("GET", "/catalog/gpus", query={
+    # Per the spec: `product` is an array and is REQUIRED with
+    # include=AVAILABILITY, `cloud` scopes the availability and lowest-price
+    # figures, and both are valid only alongside that include. `cloud` defaults
+    # to SECURE here to match what `up` actually creates - availability
+    # measured across a cloud you will not deploy into describes a pod you
+    # cannot get.
+    body = api("GET", "/catalog/gpus", query={
         "include": ["AVAILABILITY"],
-        "product": "POD",
+        "product": ["POD"],
+        "cloud": args.cloud,
         "minCudaVersion": args.min_cuda,
     })
-    if isinstance(gpus, dict):
-        gpus = gpus.get("gpuTypes") or gpus.get("data") or []
+
+    # Named key, and a loud failure if it is not there. Guessing at a list of
+    # plausible key names is how this printed "nothing matched" for a response
+    # that was full of GPUs: an empty result and a shape mismatch must not look
+    # the same, because one means "look elsewhere" and the other means
+    # "the reader is wrong".
+    if isinstance(body, dict) and "gpus" in body:
+        gpus = body["gpus"]
+    elif isinstance(body, list):
+        gpus = body
+    else:
+        log("[ERROR] Unexpected response shape - no 'gpus' key.")
+        log(f"        keys: {sorted(body) if isinstance(body, dict) else type(body).__name__}")
+        log("        The spec may have moved; check /v2/openapi.json.")
+        return 1
 
     rows = [g for g in gpus
             if (g.get("memory") or 0) >= args.min_memory
@@ -158,25 +178,32 @@ def cmd_catalog(args) -> int:
                  if args.name else True)]
     rows.sort(key=lambda g: (g.get("price") or {}).get("secure") or 1e9)
 
-    log(f"{'id':<34}{'VRAM':>6}{'$/h':>9}{'avail':>8}  data centres")
-    for g in rows:
-        price = (g.get("price") or {})
-        hourly = price.get("secure") or price.get("community") or 0
-        avail = g.get("availability")
-        # Availability is an expansion and may simply be absent; printing "?"
-        # is honest, printing 0 would read as "none free" and be a lie.
-        avail_s = str(avail) if avail is not None else "?"
-        dcs = g.get("dataCenters") or []
-        log(f"{str(g.get('id',''))[:33]:<34}"
-            f"{g.get('memory') or 0:>5}G"
-            f"{hourly:>9.3f}"
-            f"{avail_s:>8}  "
-            f"{','.join(str(d) for d in dcs[:4])}"
-            f"{' ...' if len(dcs) > 4 else ''}")
     if not rows:
         log("(nothing matched - loosen --min-memory or --min-cuda)")
-    log(f"\n{len(rows)} type(s). Availability reflects this moment, not a "
-        f"reservation.")
+        return 0
+
+    for g in rows:
+        price = g.get("price") or {}
+        secure = price.get("secure")
+        community = price.get("community")
+        log(f"{str(g.get('id','')):<34}{g.get('memory') or 0:>4}G"
+            f"   secure {secure if secure is not None else '-':>6}"
+            f"   community {community if community is not None else '-':>6}"
+            f"   {g.get('availability') or '?'}")
+        # Per-data-centre stock, and the reason to ask for AVAILABILITY at all:
+        # choosing a zone is the decision this output exists to inform, and the
+        # overall figure hides it. NONE entries are dropped - a data centre
+        # with no stock is not a candidate.
+        live = [d for d in (g.get("dataCenters") or [])
+                if d.get("availability") != "NONE"]
+        if live:
+            log("      " + "   ".join(
+                f"{d.get('id')} {d.get('availability')}" for d in live))
+        else:
+            log("      (no data centre reporting stock right now)")
+
+    log(f"\n{len(rows)} type(s). Availability is this moment, not a "
+        f"reservation - HIGH now can be NONE in an hour.")
     return 0
 
 
@@ -313,6 +340,9 @@ def main() -> int:
     c = sub.add_parser("catalog", help="GPU types, prices and availability")
     c.add_argument("--min-memory", type=int, default=0, help="VRAM floor in GB")
     c.add_argument("--min-cuda", default="13.0")
+    c.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"],
+                   help="which cloud the availability figures describe. "
+                        "SECURE matches what `up` creates by default")
     c.add_argument("--name", default="", help="substring filter on the id")
     c.set_defaults(func=cmd_catalog)
 
