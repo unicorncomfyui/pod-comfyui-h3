@@ -548,6 +548,15 @@ def _up_once(args):
         log("        " + json.dumps(redact(pod))[:400])
         return 1
 
+    # Written before anything else can fail. A caller that has the id can
+    # terminate the pod and can ask what it cost; a caller reduced to grepping
+    # this output has neither once the format shifts by a space.
+    if args.id_file:
+        try:
+            Path(args.id_file).write_text(pod_id + "\n", encoding="utf-8")
+        except OSError as exc:
+            log(f"[WARN] Could not write {args.id_file}: {exc}")
+
     # Printed before the wait, and on its own line, because everything after
     # this point can fail while the pod keeps billing. This id is how it gets
     # stopped, so it must survive a scrollback nobody read to the end.
@@ -1088,6 +1097,10 @@ def main() -> int:
                    help="reject the machine if it has less host RAM than this, in the decimal GB Runpod advertises - 92 means the 92 GB offer, not the 86 GiB its cgroup reports. Checked AFTER boot from the pod's own log: the API has no memory filter for GPU pods and does not report it either")
     u.add_argument("--attempts", type=int, default=1, metavar="N",
                    help="draw up to N machines until one meets --min-ram, terminating each that does not. Only useful with --min-ram")
+    u.add_argument("--id-file", metavar="PATH",
+                   help="write the created pod id here, before the wait "
+                        "starts - so a caller can still terminate it and "
+                        "ask what it cost after this command has died")
     u.add_argument("--no-precheck", action="store_true",
                    help="skip the catalogue lookup before creating")
     u.add_argument("--timeout", type=int, default=600)
