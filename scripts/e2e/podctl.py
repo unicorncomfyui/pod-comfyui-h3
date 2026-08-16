@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -272,8 +273,16 @@ def cmd_catalog(args) -> int:
                 f"reporting stock right now)")
             continue
         for d in live:
-            meta = index.get(d.get("id")) or {}
-            tiers = ",".join(meta.get("networkVolumeTypes") or []) or "?"
+            meta = index.get(d.get("id"))
+            # "none" and "?" are different answers. networkVolumeTypes is a
+            # required field of a data centre record, so an empty list means
+            # this zone offers no network volumes at all - which disqualifies
+            # it for anything that has to persist. Only a zone missing from
+            # the catalogue is genuinely unknown.
+            if meta is None:
+                tiers = "?"
+            else:
+                tiers = ",".join(meta.get("networkVolumeTypes") or []) or "none"
             log(f"      {str(d.get('id','')):<10} {str(d.get('availability')):<7}"
                 f" volumes: {tiers}")
 
@@ -457,7 +466,34 @@ def cmd_up(args) -> int:
             last = status
         if status == "RUNNING":
             log(f"\n[OK] Running after {int(time.time() - (deadline - args.timeout))} s.")
-            return 0
+            if not args.min_ram:
+                return 0
+            # The one check that cannot be a filter. Asked for after the fact,
+            # so a machine that is too small costs a boot rather than a run -
+            # which is the cheap end of a mistake that would otherwise surface
+            # as an offloader thrashing mid-generation.
+            ram = wait_for_ram(pod_id)
+            if ram is None:
+                log("[WARN] Could not read the pod's RAM from its log within "
+                    "3 min. Left running - check it yourself.")
+                return 0
+            if ram >= args.min_ram:
+                log(f"[OK] {ram} GB of RAM, at or above the {args.min_ram} GB "
+                    f"asked for.")
+                return 0
+            log(f"[ERROR] {ram} GB of RAM, below the {args.min_ram} GB asked "
+                f"for. The API cannot request memory, so this is the only "
+                f"place it can be caught.")
+            if args.keep:
+                log("       Left running as asked.")
+                return 1
+            log("       Terminating; run `up` again to draw another machine.")
+            try:
+                api("DELETE", f"/pods/{pod_id}")
+                log("[OK] Terminated.")
+            except urllib.error.HTTPError:
+                log(f"[WARN] Could not terminate {pod_id}. STOP IT BY HAND.")
+            return 1
         if status in ("ERROR", "EXITED", "TERMINATED"):
             log(f"\n[ERROR] Pod reached {status} without running.")
             break
@@ -501,6 +537,38 @@ def cmd_ls(args) -> int:
             f"{str(gpu)[:29]:<30}{p.get('name','')}")
     log(f"\n{len(pods)} pod(s). Anything RUNNING here is being charged for.")
     return 0
+
+
+def fetch_logs(pod_id: str) -> str:
+    out = api("GET", f"/pods/{pod_id}/logs")
+    if isinstance(out, dict):
+        out = out.get("logs") or out.get("data") or ""
+    return out if isinstance(out, str) else json.dumps(out)
+
+
+# init.sh prints exactly one of these two lines, and prefers the cgroup because
+# /proc/meminfo inside a container reports the HOST's memory: a 92 GB pod on a
+# big machine announces 386 GB. The cgroup limit is the allocation.
+RAM_LINE = re.compile(
+    r"(?:memory limit read from cgroup|reporting host RAM):\s*(\d+)\s*GB")
+
+
+def wait_for_ram(pod_id: str, timeout: int = 180) -> int | None:
+    """Host RAM in GB, read out of the pod's own boot log.
+
+    There is no other way to get it. REST v2 has no memory or vCPU field on
+    CreatePodRequest for GPU pods and none on the Pod object either - RAM comes
+    bundled with whatever machine the scheduler picked, and the API neither
+    accepts a floor nor reports the result. The pod knows, because init.sh was
+    written to find out; asking it after the fact is the only route.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        m = RAM_LINE.search(fetch_logs(pod_id))
+        if m:
+            return int(m.group(1))
+        time.sleep(5)
+    return None
 
 
 def cmd_templates(args) -> int:
@@ -583,6 +651,8 @@ def main() -> int:
                         "template otherwise). No data centre pin needed, but "
                         "it dies with the host. Ignored when --volume is given")
     u.add_argument("--env", action="append", default=[], help="KEY=value")
+    u.add_argument("--min-ram", type=int, default=0, metavar="GB",
+                   help="reject the machine if it reports less host RAM than this. Checked AFTER boot from the pod's own log - the API has no memory filter for GPU pods and does not report it either")
     u.add_argument("--timeout", type=int, default=600)
     u.add_argument("--keep", action="store_true",
                    help="do not terminate a pod that failed to start")
