@@ -1,0 +1,123 @@
+name: E2E on a real pod
+
+# Manual only, and deliberately. This job starts a GPU on a paid account, so
+# it must never be reachable from a pull request - including one opened by
+# someone who has just forked the repository. workflow_dispatch is the one
+# trigger that requires write access to fire.
+#
+# There are no assertions yet. This exists to prove the chain holds from
+# Actions - key, environment, pod, teardown - and a job that also judged
+# performance would, on its first red run, leave you unable to tell which half
+# broke. Thresholds come once three runs have shown what the noise looks like.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image tag to boot (prefer an immutable one)'
+        type: string
+        default: 'vlop12ui/pod-comfyui-h3:cu130-develop'
+      gpu:
+        description: 'GPU type id, exactly as the catalogue names it'
+        type: string
+        default: 'NVIDIA GeForce RTX 5090'
+      datacenters:
+        description: 'Comma-separated zone ids, or empty to let the scheduler choose'
+        type: string
+        default: 'EU-RO-1,EUR-IS-2'
+      workspace:
+        description: 'Persistent disk at /workspace, in GB'
+        type: string
+        default: '90'
+      min_ram:
+        description: 'Reject a machine below this many GB, as Runpod advertises it'
+        type: string
+        default: '90'
+      attempts:
+        description: 'How many machines to draw before giving up'
+        type: string
+        default: '3'
+      download_models:
+        description: 'Fetch the weights (slow, ~10 min) or boot bare'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # The key lives here and nowhere else: an environment secret is invisible
+    # to every job that does not name the environment, and the deployment
+    # branch rules decide which branches may name it at all.
+    environment: e2e
+    timeout-minutes: 45
+
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      # The name is the teardown's handle. If the job is cancelled mid-flight
+      # the pod id is never captured, so the sweep matches on this prefix
+      # instead - which is derivable from the run without having read anything.
+      POD_NAME: e2e-gh-${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show what will be created
+        run: |
+          python scripts/e2e/podctl.py up \
+            --image "${{ inputs.image }}" \
+            --gpu "${{ inputs.gpu }}" \
+            --workspace "${{ inputs.workspace }}" \
+            --name "$POD_NAME" \
+            --env "DOWNLOAD_MODELS=${{ inputs.download_models }}" \
+            $(for dc in $(echo "${{ inputs.datacenters }}" | tr ',' ' '); do
+                printf -- '--datacenter %s ' "$dc"; done) \
+            --dry-run
+
+      - name: Start a pod and check the machine
+        id: up
+        run: |
+          python scripts/e2e/podctl.py up \
+            --image "${{ inputs.image }}" \
+            --gpu "${{ inputs.gpu }}" \
+            --workspace "${{ inputs.workspace }}" \
+            --min-ram "${{ inputs.min_ram }}" \
+            --attempts "${{ inputs.attempts }}" \
+            --name "$POD_NAME" \
+            --env "DOWNLOAD_MODELS=${{ inputs.download_models }}" \
+            $(for dc in $(echo "${{ inputs.datacenters }}" | tr ',' ' '); do
+                printf -- '--datacenter %s ' "$dc"; done)
+
+      - name: What the pod became
+        if: always()
+        run: python scripts/e2e/podctl.py ls
+
+      # Deliberately last-but-one and never conditional on success: the log of
+      # a pod that failed to come up is the whole reason to have this job, and
+      # init.sh writes its CUDA verdict there.
+      - name: Boot log
+        if: always()
+        run: |
+          POD=$(python scripts/e2e/podctl.py ls \
+                | awk -v n="$POD_NAME" '$0 ~ n {print $1; exit}')
+          if [ -n "$POD" ]; then
+            python scripts/e2e/podctl.py logs "$POD" --tail 400
+          else
+            echo "No pod named $POD_NAME - nothing to read."
+          fi
+
+      # By name, not by id. A cancelled job never gets here at all, but a
+      # failed one does, and the id may never have been printed if `up` died
+      # before creating anything. The prefix is knowable from the run number
+      # alone, so this also gives a human an exact command to run later.
+      - name: Terminate
+        if: always()
+        run: |
+          python scripts/e2e/podctl.py down --prefix "$POD_NAME" --yes || true
+          python scripts/e2e/podctl.py ls
+
+      - name: What it cost
+        if: always()
+        run: python scripts/e2e/podctl.py cost --last 1 --bucket day || true
