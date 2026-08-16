@@ -414,18 +414,38 @@ def cmd_up(args) -> int:
     loop, --min-ram is a way to fail rather than a way to get what you asked
     for, and you end up typing `up` in a while loop by hand.
     """
+    last = ""
     for attempt in range(1, args.attempts + 1):
         if args.attempts > 1:
             log(f"\n=== attempt {attempt}/{args.attempts} ===")
         rc = _up_once(args)
-        if rc != "retry":
+        if rc not in ("retry", "capacity"):
             return rc
-        if attempt == args.attempts:
-            log(f"\n[ERROR] {args.attempts} machine(s) drawn, none with "
-                f"{args.min_ram} GB. That size may not exist in these data "
-                f"centres - the console's RAM/GPU filter will tell you where "
-                f"it does.")
-            return 1
+        last = rc
+        # Back off between capacity failures. Hammering an API that just told
+        # us it could not place a pod is how a transient shortage becomes a
+        # rate limit, and the wait costs nothing - no pod exists to bill.
+        if rc == "capacity" and attempt < args.attempts:
+            time.sleep(min(15 * attempt, 60))
+
+    # Two different failures, and conflating them sends you to the wrong
+    # screen. A machine drawn and refused is a sizing question; a machine
+    # never created is a capacity question, and no amount of --min-ram will
+    # change it.
+    log("")
+    if last == "capacity":
+        log(f"[ERROR] {args.attempts} attempt(s), no pod created. The API "
+            f"refused the placement, not the settings.")
+        log("        This endpoint places one exact GPU type and does not "
+            "search for capacity.")
+        log("        Widen the search - drop --datacenter, or pick a zone the "
+            "catalogue shows with stock:")
+        log(f"          python {sys.argv[0]} catalog --region ALL")
+    else:
+        log(f"[ERROR] {args.attempts} machine(s) drawn, none with "
+            f"{args.min_ram} GB. That size may not exist in these data "
+            f"centres - the console's RAM/GPU filter will tell you where it "
+            f"does.")
     return 1
 
 
@@ -467,7 +487,37 @@ def _up_once(args):
         log(json.dumps(redact(body), indent=2))
         return 0
 
-    pod = api("POST", "/pods", body=body)
+    # This endpoint places one specific GPU type: its own documentation says it
+    # does not search for capacity and does not fall back, and tells you to
+    # read the catalogue first. So read it - a placement that was never going
+    # to work should be named here rather than inferred from a 500 whose body
+    # says only "failed to create pod".
+    if args.gpu and not args.no_precheck:
+        try:
+            stock = gpu_availability(args.gpu, args.datacenter)
+            if stock:
+                note("Stock      " + "   ".join(f"{k} {v}" for k, v in stock.items()))
+            else:
+                note(f"[WARN] The catalogue reports no stock for '{args.gpu}'"
+                     + (f" in {', '.join(args.datacenter)}" if args.datacenter else "")
+                     + ". Creating anyway - availability moves by the minute - "
+                       "but a failure here is capacity, not configuration.")
+        except Exception:  # noqa: BLE001 - a hint must never block a deploy
+            pass
+
+    try:
+        pod = api("POST", "/pods", body=body)
+    except urllib.error.HTTPError as e:
+        # 500 is not in this endpoint's documented set (201/400/401/403/404/
+        # 422/429), and 429 is transient by definition. Neither says the
+        # request was wrong, so neither should end a run that was given more
+        # than one attempt - which is what happened: attempt 1 of 2 raised and
+        # the whole job stopped.
+        if e.code >= 500 or e.code == 429:
+            log(f"       Failed on the API's side ({e.code}). That spends this "
+                f"attempt, not the run.")
+            return "capacity"
+        raise
     pod_id = pod.get("id")
     if not pod_id:
         log("[ERROR] The API accepted the request but returned no pod id.")
@@ -798,6 +848,29 @@ def cmd_templates(args) -> int:
     return 0
 
 
+def gpu_availability(gpu_id: str, datacenters: list) -> dict:
+    """{zone: level} for one GPU type, restricted to the zones asked for.
+
+    Only the zones with stock are returned, so an empty result means the
+    placement about to be attempted has nowhere to land.
+    """
+    body = api("GET", "/catalog/gpus", query={
+        "include": ["AVAILABILITY"], "product": ["POD"], "cloud": "SECURE"})
+    rows = body.get("gpus") if isinstance(body, dict) else body
+    for g in rows or []:
+        if str(g.get("id")) != gpu_id:
+            continue
+        out = {}
+        for d in g.get("dataCenters") or []:
+            if d.get("availability") == "NONE":
+                continue
+            if datacenters and d.get("id") not in datacenters:
+                continue
+            out[d.get("id")] = d.get("availability")
+        return out
+    return {}
+
+
 def cmd_action(args) -> int:
     """start / stop / restart a pod.
 
@@ -990,6 +1063,8 @@ def main() -> int:
                    help="reject the machine if it has less host RAM than this, in the decimal GB Runpod advertises - 92 means the 92 GB offer, not the 86 GiB its cgroup reports. Checked AFTER boot from the pod's own log: the API has no memory filter for GPU pods and does not report it either")
     u.add_argument("--attempts", type=int, default=1, metavar="N",
                    help="draw up to N machines until one meets --min-ram, terminating each that does not. Only useful with --min-ram")
+    u.add_argument("--no-precheck", action="store_true",
+                   help="skip the catalogue lookup before creating")
     u.add_argument("--timeout", type=int, default=600)
     u.add_argument("--keep", action="store_true",
                    help="do not terminate a pod that failed to start")
