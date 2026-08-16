@@ -13,10 +13,18 @@ name: E2E on a real pod
 on:
   workflow_dispatch:
     inputs:
-      image:
-        description: 'Image tag to boot (prefer an immutable one)'
+      template:
+        description: 'Pod template id. It supplies image, disk and ports; leave empty to send them from here instead'
         type: string
-        default: 'vlop12ui/pod-comfyui-h3:cu130-develop'
+        default: '3vjatmn70p'
+      image:
+        description: 'Image tag, used only when no template is given'
+        type: string
+        default: ''
+      disk:
+        description: 'Container disk in GB, empty to leave it to the template'
+        type: string
+        default: ''
       gpu:
         description: 'GPU type id, exactly as the catalogue names it'
         type: string
@@ -67,7 +75,9 @@ jobs:
       - name: Show what will be created
         run: |
           python scripts/e2e/podctl.py up \
-            --image "${{ inputs.image }}" \
+            ${{ inputs.template && format('--template {0}', inputs.template) || '' }} \
+            ${{ inputs.image && format('--image {0}', inputs.image) || '' }} \
+            ${{ inputs.disk && format('--disk {0}', inputs.disk) || '' }} \
             --gpu "${{ inputs.gpu }}" \
             --workspace "${{ inputs.workspace }}" \
             --name "$POD_NAME" \
@@ -80,7 +90,9 @@ jobs:
         id: up
         run: |
           python scripts/e2e/podctl.py up \
-            --image "${{ inputs.image }}" \
+            ${{ inputs.template && format('--template {0}', inputs.template) || '' }} \
+            ${{ inputs.image && format('--image {0}', inputs.image) || '' }} \
+            ${{ inputs.disk && format('--disk {0}', inputs.disk) || '' }} \
             --gpu "${{ inputs.gpu }}" \
             --workspace "${{ inputs.workspace }}" \
             --min-ram "${{ inputs.min_ram }}" \
